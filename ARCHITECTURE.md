@@ -1,5 +1,3 @@
-# ARCHITECTURE.md
-
 # Architecture
 
 ## 1. Purpose
