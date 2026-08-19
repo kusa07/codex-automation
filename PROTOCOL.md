@@ -1,5 +1,3 @@
-# PROTOCOL.md
-
 # Development Protocol
 
 ## 1. Purpose
