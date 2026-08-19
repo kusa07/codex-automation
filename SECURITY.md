@@ -104,9 +104,11 @@ Before execution, the automation records whether `auth.json` changes.
 After execution:
 
 - unchanged auth -> do not create a new secret version
-- changed auth -> create a new secret version
+- changed auth -> treat it as a candidate authentication state and create a candidate secret version
 
-A new secret version must be verified before the previous version is retired.
+A change and a usable new authentication state are separate determinations. The candidate version must be verified after storage and adopted as the next authoritative state only when validation succeeds. This rule also applies when Codex exits abnormally; a changed file must not be accepted unconditionally.
+
+If validation fails, the previous version must remain enabled and must not be destroyed, and the job must not report success.
 
 ## 10. Secret retirement
 
@@ -117,14 +119,20 @@ current version
     ↓
 Codex
     ↓
-new version
+changed auth.json
     ↓
-verify new version
+candidate version
+    ↓
+validate candidate
+    ↓
+adopt as authoritative state
     ↓
 disable previous version
     ↓
 later cleanup / destroy
 ```
+
+If candidate validation fails, the previous version remains authoritative and enabled; it is neither disabled nor destroyed, and the failure is reported.
 
 Permanent destruction must not happen merely because an upload command returned success.
 
