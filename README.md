@@ -1,5 +1,3 @@
-# README.md
-
 # codex-automation
 
 A reusable automation layer connecting ChatGPT, GitHub, and Codex across multiple repositories.
