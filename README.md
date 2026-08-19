@@ -82,6 +82,8 @@ interest-gacha branch / Pull Request
 
 - `ARCHITECTURE.md`
   - overall architecture and component responsibilities
+- `GOOGLE_CLOUD.md`
+  - Google Cloud / Workload Identity Federation / Secret Manager architecture
 - `CONTRACT.md`
   - interface between caller repositories and codex-automation
 - `PROTOCOL.md`
