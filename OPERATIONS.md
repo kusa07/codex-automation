@@ -35,9 +35,11 @@ run Codex
     ↓
 detect auth.json changes
     ↓
-persist updated auth if necessary
+store changed auth as a candidate version if necessary
     ↓
-verify persistence
+validate candidate authentication state
+    ↓
+adopt only after successful validation
     ↓
 retire previous auth version safely
     ↓
@@ -52,9 +54,11 @@ report result
 
 Each caller repository has a serialized Codex execution stream.
 
-If multiple Issues become ready at approximately the same time, they should queue rather than run concurrently against the same authentication state.
+If multiple Issues become ready at approximately the same time, they form a repository-level queue and are processed one at a time rather than running concurrently against the same authentication state.
 
-Execution order and queue behavior will be defined precisely during workflow implementation.
+A new run must not simply replace or cancel the Codex job already in progress. The implementation is expected to use GitHub Actions concurrency / queue behavior and to avoid `cancel-in-progress`-equivalent behavior for the Codex execution stream by default. Interrupting a job while it is updating authentication state or a branch may create inconsistent state.
+
+The exact execution order, queue behavior, and YAML syntax will be defined precisely during workflow implementation.
 
 ## 4. Successful execution
 
@@ -76,7 +80,8 @@ If Codex fails:
 - preserve useful sanitized logs
 - do not expose credentials
 - determine whether `auth.json` changed
-- safely persist authentication changes if required for credential continuity
+- treat any changed `auth.json` as a candidate rather than adopting it unconditionally
+- validate a stored candidate before using it as the next authoritative authentication state
 - report the failure to the caller
 - do not falsely mark the implementation as successful
 
@@ -127,11 +132,12 @@ This is considered a high-priority operational failure.
 
 ## 10. New-version verification failure
 
-If a new Secret Manager version was created but cannot be verified:
+If a new Secret Manager version was created but cannot be verified as both correctly stored and usable:
 
-- keep the previous version available
-- do not destroy the previous version
-- treat the authentication update as unsuccessful
+- keep the previous version authoritative and enabled
+- do not disable or destroy the previous version
+- do not adopt the candidate, including when Codex exited abnormally
+- treat the authentication update and the job as unsuccessful
 - report the failure
 
 ## 11. Pull Request failure
