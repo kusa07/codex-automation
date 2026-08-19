@@ -1,5 +1,3 @@
-# OPERATIONS.md
-
 # Operations
 
 ## 1. Purpose
