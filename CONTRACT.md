@@ -24,6 +24,8 @@ A caller repository MUST own:
 
 A caller repository SHOULD provide project-specific Codex guidance through mechanisms such as `AGENTS.md`.
 
+The caller workflow is also responsible for explicitly declaring the GitHub Actions permissions required by the reusable workflow. A reusable workflow cannot elevate permissions beyond those granted by its caller. Potential permissions include `contents: write`, `pull-requests: write`, and `id-token: write`; the exact set will be fixed during implementation according to least privilege.
+
 ## 3. codex-automation responsibilities
 
 `codex-automation` MUST own:
@@ -58,6 +60,8 @@ codex-automation reusable workflow
 ```
 
 Changes to the internal authentication mechanism should not normally require changes in every caller repository.
+
+Being thin means that the caller does not duplicate shared business or infrastructure logic. It does not remove the caller's responsibility to provide an explicit, minimal GitHub permission boundary required for the shared workflow to operate.
 
 ## 5. Expected caller identity
 
@@ -110,11 +114,11 @@ The exact output contract will be defined during implementation design.
 
 ## 9. Versioning
 
-Caller repositories should invoke a versioned or otherwise controlled release of the reusable workflow.
+Caller repositories should invoke the reusable workflow through a versioned or otherwise controlled reference.
 
-Caller repositories should not unintentionally consume arbitrary breaking changes from the shared repository.
+The default policy is to pin the workflow reference to an immutable commit SHA. Branch references that implicitly follow updates are not the normal operating model. When `codex-automation` is updated, each caller repository should deliberately update its referenced SHA so that it does not automatically consume a breaking change.
 
-The concrete versioning mechanism will be decided during workflow implementation.
+A release or tag-based process may be introduced later, and its exact mechanics will be decided during workflow implementation.
 
 ## 10. Non-goals
 
