@@ -195,10 +195,13 @@ After Codex execution:
 
 1. Check whether `auth.json` changed.
 2. If unchanged, create no new Secret Manager version.
-3. If changed, create a new secret version.
-4. Verify that the new version was stored correctly.
-5. Only after verification, disable the previous version.
-6. Destroy old versions only according to a separately defined safe retention / cleanup policy.
+3. If changed, treat the changed file as a candidate authentication state and create a new secret version.
+4. Verify both that the candidate version was stored correctly and that it is a usable authentication state.
+5. Only after successful validation, adopt the candidate as the next authoritative authentication state and disable the previous version.
+6. If validation fails, keep the previous version enabled, do not destroy it, and do not report the job as successful.
+7. Destroy old versions only according to a separately defined safe retention / cleanup policy.
+
+A changed file and a valid new authentication state are separate conditions. A changed `auth.json` must not be adopted unconditionally, including when Codex exits abnormally.
 
 Immediate irreversible destruction is intentionally avoided.
 
@@ -220,11 +223,15 @@ Issue C
 
 Separate caller repositories may have separate serialized streams and separate `auth.json` secrets.
 
-This prevents multiple jobs from mutating or refreshing the same authentication state simultaneously.
+Runs within one caller repository form a queue and are processed one at a time. A new run must not simply replace or cancel a Codex job already in progress. The implementation is expected to use GitHub Actions concurrency / queue behavior, with `cancel-in-progress`-equivalent behavior disabled by default for the Codex execution stream. The exact YAML syntax will be decided during implementation.
+
+This prevents multiple jobs from mutating or refreshing the same authentication state simultaneously, and avoids interrupting authentication or branch updates in a way that could leave inconsistent state.
 
 ## 7. Reusable workflow architecture
 
 The final implementation is expected to expose a reusable GitHub Actions workflow from `codex-automation`.
+
+Caller repositories should invoke that workflow through a versioned, controlled reference. The default policy is to pin the reusable workflow to an immutable commit SHA rather than follow a branch implicitly. When `codex-automation` changes, each caller deliberately updates its pinned SHA so that breaking changes are not adopted automatically. A release or tag-based process may be introduced later.
 
 Caller repositories should contain only a thin adapter responsible for:
 
