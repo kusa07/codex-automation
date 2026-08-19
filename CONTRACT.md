@@ -1,5 +1,3 @@
-# CONTRACT.md
-
 # Caller Contract
 
 ## 1. Purpose
