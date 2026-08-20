@@ -1,21 +1,98 @@
-name: Codex reusable workflow
+name: Codex connectivity test
 
 on:
   workflow_call:
+    inputs:
+      google_cloud_project_id:
+        description: Google Cloud project containing the caller-specific Secret
+        required: true
+        type: string
+      workload_identity_provider:
+        description: Full resource name of the trusted Workload Identity Provider
+        required: true
+        type: string
 
 jobs:
-  phase-1-skeleton:
-    name: Phase 1 OIDC skeleton
+  connectivity-test:
+    name: Test direct WIF and Secret access
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    env:
+      CALLER_REPOSITORY_NAME: ${{ github.event.repository.name }}
+      GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
+      # This name selects a resource. Secret IAM based on repository_id is the
+      # authorization boundary; the derived name is not an authorization check.
+      CONNECTIVITY_SECRET_ID: codex-auth-${{ github.event.repository.name }}
+      CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
     steps:
-      - name: Confirm Phase 1 scope
+      # auth creates an ephemeral credentials file in GITHUB_WORKSPACE for
+      # setup-gcloud. Checkout is therefore required, but Git credentials are
+      # not persisted and repository contents are not otherwise used.
+      - name: Prepare workspace for Google authentication
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Authenticate to Google Cloud with direct WIF
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          workload_identity_provider: ${{ inputs.workload_identity_provider }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Confirm Google Cloud authentication
+        shell: bash
+        run: echo "Google Cloud authentication succeeded"
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          version: ">= 363.0.0"
+
+      - name: Retrieve and validate caller Secret
         shell: bash
         run: |
           set -euo pipefail
-          echo "Reusable workflow skeleton is active."
-          echo "Google Cloud authentication, Secret access, and Codex execution are not implemented in Phase 1."
+          umask 077
+
+          [[ "${CALLER_REPOSITORY_NAME}" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "Caller repository name is not valid for Secret selection" >&2
+            exit 1
+          }
+          [[ "${GOOGLE_CLOUD_PROJECT_ID}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || {
+            echo "Google Cloud project ID format is invalid" >&2
+            exit 1
+          }
+
+          gcloud secrets versions access latest \
+            --project="${GOOGLE_CLOUD_PROJECT_ID}" \
+            --secret="${CONNECTIVITY_SECRET_ID}" \
+            --out-file="${CONNECTIVITY_SECRET_FILE}" \
+            --quiet
+
+          echo "Secret retrieved successfully"
+          [[ -f "${CONNECTIVITY_SECRET_FILE}" ]] || {
+            echo "Retrieved Secret file does not exist" >&2
+            exit 1
+          }
+          [[ -s "${CONNECTIVITY_SECRET_FILE}" ]] || {
+            echo "Retrieved Secret file is empty" >&2
+            exit 1
+          }
+          echo "Retrieved file is non-empty"
+
+      - name: Remove temporary Secret file
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f -- "${CONNECTIVITY_SECRET_FILE}"
+          echo "Temporary Secret file removed"
 
 
