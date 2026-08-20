@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This document defines the v0.1 Google Cloud design for authentication, Secret Manager lifecycle, and IAM isolation used by `codex-automation`.
+This document defines the v0.2 Google Cloud design for authentication, Secret Manager lifecycle, and IAM isolation used by `codex-automation`.
 
 It covers only the shared infrastructure used to protect and operate Codex authentication state. It does not define or host application-specific Google Cloud resources.
 
@@ -16,6 +16,7 @@ It covers only the shared infrastructure used to protect and operate Codex authe
 - no long-lived service account keys
 - least privilege
 - immutable GitHub identity claims where practical
+- reusable workflow identity and approved implementation version validation
 
 ## 3. High-level structure
 
@@ -37,22 +38,24 @@ Google Cloud Project
 Repository access flow:
 
 ```text
-kusa07/interest-gacha
+GitHub caller repository
+    ↓ reusable workflow
+kusa07/codex-automation/.github/workflows/codex-run.yml
     ↓ GitHub OIDC
 Workload Identity Provider
-    ↓ repository identity validation
+    ↓ owner + workflow path + approved workflow SHA validation
 Federated principal
-    ↓ Secret-level IAM
-codex-auth-interest-gacha
+    ↓ repository ID + Secret-level IAM
+caller-specific Secret
 ```
 
 ## 4. Google Cloud Project
 
 The design uses one Google Cloud Project dedicated to the Codex authentication infrastructure.
 
-The conceptual project name is `codex-automation`. Because a Google Cloud Project ID must be globally unique, implementation will select an available unique ID rather than assuming this conceptual name is available.
+The conceptual project name is `codex-automation`. Because a Google Cloud Project ID must be globally unique, implementation selects an available unique ID rather than assuming this conceptual name is available.
 
-Application workloads and application-specific infrastructure are not placed in this project.
+Application workloads and application-specific infrastructure are not placed in this project. Project creation and billing configuration remain manual prerequisites and are not performed by the Phase 1 scripts.
 
 ## 5. Workload Identity Pool
 
@@ -76,11 +79,11 @@ Issuer:
 
 - `https://token.actions.githubusercontent.com/`
 
-The provider accepts OIDC tokens issued to GitHub Actions workflows and maps selected claims into Google Cloud identity attributes.
+The Provider accepts OIDC tokens issued to GitHub Actions workflows and maps selected claims into Google Cloud identity attributes.
 
 ## 7. Attribute mapping
 
-The initial mapping includes at least:
+The Provider maps at least:
 
 ```text
 google.subject                     <- assertion.sub
@@ -88,25 +91,31 @@ attribute.repository_id            <- assertion.repository_id
 attribute.repository_owner_id      <- assertion.repository_owner_id
 attribute.repository               <- assertion.repository
 attribute.job_workflow_ref         <- assertion.job_workflow_ref
+attribute.job_workflow_sha         <- assertion.job_workflow_sha
 ```
 
-Authorization should prefer the immutable `repository_id` rather than a human-readable repository name.
-
-The `repository` attribute may be used for readability, logging, and operational verification, but it is not the primary authorization key.
+Authorization prefers immutable IDs and implementation hashes. The human-readable `repository` attribute may be used for logging and operational verification, but it is not an authorization primary key.
 
 ## 8. Provider-level condition
 
-The Provider entry condition restricts access to the trusted GitHub owner using `repository_owner_id`.
+The Provider accepts a token only when all of the following are true:
+
+1. `repository_owner_id` matches the trusted GitHub owner.
+2. `job_workflow_ref` identifies `kusa07/codex-automation/.github/workflows/codex-run.yml`.
+3. `job_workflow_sha` is in the explicitly approved workflow SHA list.
 
 Conceptually:
 
 ```text
 assertion.repository_owner_id == "<TRUSTED_GITHUB_OWNER_ID>"
+AND assertion.job_workflow_ref starts with
+    "kusa07/codex-automation/.github/workflows/codex-run.yml@"
+AND assertion.job_workflow_sha is one of <APPROVED_WORKFLOW_SHAS>
 ```
 
-This layer admits repositories belonging to the trusted owner without selecting individual repositories. Repository-level isolation is enforced at the Secret IAM layer.
+The workflow ref check fixes the reusable workflow repository and path while allowing callers to pin an immutable ref. The separate SHA check identifies the approved implementation version.
 
-The actual owner ID remains a deployment value and is not fixed in this design document.
+The Phase 1 scripts accept owner ID, workflow identity, and approved SHA values as runtime inputs. When no SHA has been approved during bootstrap, the generated condition uses a non-matching sentinel and therefore does not admit a GitHub token.
 
 ## 9. Repository-level Secret isolation
 
@@ -122,7 +131,11 @@ project-b
 
 Each repository may read and manage versions only for its own Secret. It must not access another caller repository's Secret.
 
-Secret-level authorization uses the immutable GitHub `repository_id` as its primary repository boundary. Actual repository IDs remain deployment values.
+Secret IAM binds the immutable GitHub `repository_id` by using a federated principal set containing the Google Cloud Project Number:
+
+```text
+principalSet://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/github/attribute.repository_id/<REPOSITORY_ID>
+```
 
 ## 10. Secret Manager structure
 
@@ -136,20 +149,9 @@ codex-auth-project-b
 codex-auth-project-c
 ```
 
-The Secret payload is the Codex `auth.json`.
+The Secret payload is the Codex `auth.json`. Phase 1 does not read, write, display, or provide an example payload.
 
-Each Secret contains versions representing authentication state at different points in time:
-
-```text
-Secret: codex-auth-interest-gacha
-
-Version 1
-Version 2
-Version 3
-...
-```
-
-Only a successfully validated and adopted version is authoritative for the next execution.
+Each Secret contains versions representing authentication state at different points in time. Only a successfully validated and adopted version is authoritative for the next execution.
 
 ## 11. IAM roles
 
@@ -160,13 +162,11 @@ The initial design grants the federated repository principal the following prede
 
 These roles are not granted across the entire project. Secret-level bindings provide repository isolation and least privilege.
 
-`Secret Version Manager` includes the ability to destroy versions. To simplify v0.1 implementation, the predefined role is used initially. A later design may separate destroy permission through a custom role or a dedicated cleanup identity.
+`Secret Version Manager` includes the ability to destroy versions. To simplify the initial implementation, the predefined role is used. A later design may separate destroy permission through a custom role or a dedicated cleanup identity.
 
 ## 12. Service Account policy
 
 The initial design does not create or impersonate a Service Account.
-
-Used structure:
 
 ```text
 GitHub Actions
@@ -176,21 +176,7 @@ Federated principal
 Secret Manager
 ```
 
-The following structure is not used initially:
-
-```text
-GitHub
-    ↓
-WIF
-    ↓
-Service Account
-    ↓
-Secret Manager
-```
-
-Service Account impersonation may be reconsidered only if a future Google Cloud API cannot be used through direct federated resource access or if a later security design requires it.
-
-No long-lived Service Account key is introduced.
+Service Account impersonation may be reconsidered only if a future Google Cloud API cannot be used through direct federated resource access or if a later security design requires it. No long-lived Service Account key is introduced.
 
 ## 13. auth.json initial seed
 
@@ -198,36 +184,26 @@ The first Secret version must be seeded manually because no stored authenticatio
 
 ```text
 trusted machine
-    ↓
-codex login
-    ↓
+    ↓ codex login
 auth.json
-    ↓
-manual secure upload
-    ↓
-codex-auth-interest-gacha / Version 1
+    ↓ manual secure upload
+caller-specific Secret / Version 1
 ```
 
-The seed is created only in a trusted interactive environment. The `auth.json` file is never committed to this or a caller repository.
-
-After the initial seed, GitHub Actions is expected to manage candidate version creation and adoption automatically.
+The seed is created only in a trusted interactive environment. The file is never committed to this or a caller repository. Phase 1 does not implement or automate seeding.
 
 ## 14. Authentication state lifecycle
 
 ```text
-Version N
-authoritative / enabled
-    ↓
-Codex execution
-    ↓
+Version N (authoritative / enabled)
+    ↓ Codex execution
 auth.json changed?
 
 NO
     -> create no new version
 
 YES
-    -> create Version N+1
-    -> treat as candidate
+    -> create Version N+1 as candidate
     -> verify storage
     -> verify authentication usability
 
@@ -241,27 +217,26 @@ validation NG
     -> do not report the job as successful
 ```
 
-A changed `auth.json` and a valid new authentication state are separate conditions. Change detection alone is not sufficient to adopt a new authoritative state.
+A changed `auth.json` and a valid new authentication state are separate conditions. Phase 1 does not implement this lifecycle.
 
 ## 15. Destruction lifecycle
 
-Secret version destruction is separated from the normal Codex runtime lifecycle.
+Secret version destruction remains separate from the normal Codex runtime lifecycle.
 
 Runtime lifecycle:
 
-- read the authoritative version
-- add a candidate version when authentication state changes
-- verify candidate storage and usability
-- adopt the candidate
+- read
+- add a candidate version
+- verify
+- adopt
 - disable the previous version
 
 Cleanup lifecycle:
 
-- check the retention policy and recovery requirements
-- select eligible old disabled versions
-- destroy those versions through a controlled cleanup process
+- check retention and recovery requirements
+- destroy eligible old disabled versions through a controlled process
 
-The runtime does not immediately destroy the previous version.
+The Phase 1 scripts do not destroy Secret versions or other resources.
 
 ## 16. Adding a new caller repository
 
@@ -269,75 +244,99 @@ The conceptual onboarding process is:
 
 1. Determine the immutable GitHub repository ID.
 2. Create a repository-specific Secret.
-3. Seed the first `auth.json` version from a trusted machine.
-4. Add the Secret IAM binding for that repository ID.
-5. Add the thin caller workflow to the caller repository.
+3. Add Secret IAM bindings for that repository ID.
+4. Seed the first `auth.json` version manually from a trusted machine.
+5. Add the thin caller workflow in a later phase.
 
-The shared Workload Identity Pool and Provider are not recreated for each repository.
-
-The resources that normally increase for each caller are:
-
-- one Secret
-- one set of Secret IAM bindings
+The shared Workload Identity Pool and Provider are not recreated for each repository. The resources normally added for each caller are one Secret and its Secret IAM bindings.
 
 ## 17. Authorization layers
 
-The design uses layered authorization:
+The v0.2 design uses four checks:
 
-- Layer 1: Provider-level `repository_owner_id`
-- Layer 2: Secret-level `repository_id`
-- Layer 3: `job_workflow_ref`-based workflow identity validation
-
-Conceptually:
+| Layer | Location | Claim | Purpose |
+|---|---|---|---|
+| 1 | WIF Provider | `repository_owner_id` | trusted GitHub owner |
+| 2 | WIF Provider | `job_workflow_ref` | trusted reusable workflow repository and path |
+| 3 | WIF Provider | `job_workflow_sha` | explicitly approved workflow implementation version |
+| 4 | Secret IAM | `repository_id` | caller authorization for one Secret |
 
 ```text
 GitHub OIDC token
-    ↓
-trusted owner?
-    ↓
-authorized repository?
-    ↓
-trusted reusable workflow?
-    ↓
+    ↓ trusted owner?
+    ↓ trusted reusable workflow path?
+    ↓ approved reusable workflow SHA?
+Federated principal
+    ↓ authorized caller repository ID?
 Secret access
 ```
 
-Layers 1 and 2 define the v0.1 base boundary. The concrete enforcement method for Layer 3 remains an open design question.
+The Provider boundary controls entry to the shared federation trust. Secret IAM preserves caller-to-Secret isolation.
 
-## 18. Open design question: job_workflow_ref and commit SHA pinning
+## 18. Resolved design: job_workflow_ref and job_workflow_sha
 
-Caller repositories are expected to pin the reusable workflow to an immutable commit SHA.
+The v0.1 open design question is resolved as follows:
 
-GitHub OIDC `job_workflow_ref` includes ref information for the called reusable workflow. Requiring an exact commit SHA in a Google IAM condition may therefore require updating the IAM condition every time the pinned `codex-automation` workflow SHA changes.
+- `job_workflow_ref` identifies the trusted reusable workflow repository and fixed path.
+- `job_workflow_sha` identifies an explicitly approved immutable implementation version.
+- `repository_id` alone is not sufficient because another workflow in the same caller repository could otherwise request the same Secret access.
+- Exact version approval is maintained in the WIF Provider condition, not in each Secret IAM policy.
 
-It requires separate validation whether trusting only the workflow repository and path is both secure and technically enforceable. Relying only on `repository_id` is operationally simpler, but could allow another workflow in the same caller repository to access the Secret.
+Caller repositories still pin the reusable workflow to an immutable commit SHA. Google Cloud separately verifies that the resolved called workflow SHA is approved.
 
-The implementation must therefore define workflow identity enforcement before Google Cloud resources or workflows are deployed. This question concerns an additional defense layer and does not invalidate the shared Project, Provider, repository ID, or Secret isolation design.
+### Workflow SHA rotation
 
-Candidates to evaluate later:
+For a transition from SHA-A to SHA-B:
 
-- A. Require `job_workflow_ref` to match the complete commit SHA.
-- B. Fix only the reusable workflow repository and path identity.
-- C. Bind Secret IAM to `repository_id` and enforce workflow identity in another layer.
-- D. Use another OIDC claim or IAM structure.
+1. Create and review workflow version SHA-B.
+2. Stage the Provider condition so that SHA-A and SHA-B are both approved.
+3. Update caller repositories to pin SHA-B.
+4. Verify OIDC and Secret access through SHA-B.
+5. Explicitly finalize the Provider condition by removing SHA-A.
 
-No option is selected in v0.1.
+The old SHA is never removed before caller migration. `rotate-workflow-sha.sh` does not remove it automatically; finalization requires a separate mode and explicit confirmation.
 
-## 19. v0.1 decisions
+## 19. v0.2 decisions
 
-| Topic | v0.1 decision |
+| Topic | v0.2 decision |
 |---|---|
-| Google Cloud Project | one shared, dedicated project |
+| Google Cloud Project | one shared, dedicated existing project |
 | Workload Identity Pool | one shared pool |
 | GitHub OIDC Provider | one shared provider |
 | Service Account | not used initially |
 | Authentication | WIF direct resource access |
-| Provider boundary | `repository_owner_id` |
-| Repository boundary | `repository_id` |
+| Provider owner boundary | `repository_owner_id` |
+| Provider workflow identity | `job_workflow_ref` repository and fixed path |
+| Provider workflow version | approved `job_workflow_sha` list |
+| Repository boundary | Secret IAM with `repository_id` |
 | Secret | one per caller repository |
 | Secret IAM | applied per Secret |
+| Workflow rotation | temporarily approve old and new SHA |
 | Authentication state | candidate -> verify -> adopt |
 | Previous version | disable after successful adoption |
 | Destroy | separate cleanup lifecycle |
 | First seed | trusted interactive machine |
-| `job_workflow_ref` policy | open design question |
+
+## 20. Phase 1 files and intended execution order
+
+Phase 1 adds:
+
+- `.github/workflows/codex-run.yml`: reusable Workflow skeleton with OIDC permission, but no Google authentication or Codex execution.
+- `scripts/google-cloud/bootstrap.sh`: enables required APIs and creates or updates the shared Pool and Provider.
+- `scripts/google-cloud/add-caller.sh`: creates a caller Secret when absent and adds repository-ID-specific Secret IAM bindings.
+- `scripts/google-cloud/rotate-workflow-sha.sh`: initializes, stages, or explicitly finalizes the approved workflow SHA condition.
+
+The scripts are preparation artifacts and are not executed as part of Phase 1.
+
+Intended later sequence:
+
+1. A human creates the Google Cloud Project and configures billing.
+2. Review the scripts and the committed reusable Workflow.
+3. Record the Workflow commit SHA.
+4. Run `bootstrap.sh` with that SHA, or bootstrap with no approved SHA and then use `rotate-workflow-sha.sh initialize`.
+5. Use `add-caller.sh` to create caller-specific Secret metadata and IAM.
+6. A human securely seeds the first `auth.json` version from a trusted machine.
+7. Implement the caller Workflow in the next phase.
+8. Test OIDC and Secret access before implementing Codex execution.
+
+
