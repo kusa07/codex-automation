@@ -1,0 +1,21 @@
+name: Codex reusable workflow
+
+on:
+  workflow_call:
+
+jobs:
+  phase-1-skeleton:
+    name: Phase 1 OIDC skeleton
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Confirm Phase 1 scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Reusable workflow skeleton is active."
+          echo "Google Cloud authentication, Secret access, and Codex execution are not implemented in Phase 1."
+
+
