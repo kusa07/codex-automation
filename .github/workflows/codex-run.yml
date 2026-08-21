@@ -137,15 +137,64 @@ jobs:
           }
           echo "Codex authentication recognized"
 
+      - name: Run read-only Codex repository summary
+        env:
+          CODEX_SUMMARY_FILE: ${{ runner.temp }}/codex-repository-summary.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          # Google Cloud access is complete. Remove its workspace credential
+          # before Codex inspects the caller repository.
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" ]]; then
+            rm -f -- "${GOOGLE_GHA_CREDS_PATH}"
+          fi
+
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
+            echo "Caller repository is not clean before Codex execution" >&2
+            exit 1
+          }
+
+          prompt='このrepositoryが何をするものかを、日本語で1〜2文で説明してください。'
+          set +e
+          codex --ask-for-approval never exec \
+            --sandbox read-only \
+            --ephemeral \
+            --cd "${GITHUB_WORKSPACE}" \
+            --output-last-message "${CODEX_SUMMARY_FILE}" \
+            "${prompt}" \
+            >/dev/null 2>&1
+          codex_exit_code=$?
+          set -e
+
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
+            echo "Caller repository changed during Codex execution" >&2
+            exit 1
+          }
+          [[ ${codex_exit_code} -eq 0 ]] || {
+            echo "Codex repository summary failed" >&2
+            exit "${codex_exit_code}"
+          }
+          [[ -s "${CODEX_SUMMARY_FILE}" ]] || {
+            echo "Codex repository summary is empty" >&2
+            exit 1
+          }
+
+          echo "Codex repository summary:"
+          cat -- "${CODEX_SUMMARY_FILE}"
+
       - name: Remove temporary authentication files
         if: always()
         env:
           CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
+          CODEX_SUMMARY_FILE: ${{ runner.temp }}/codex-repository-summary.txt
         shell: bash
         run: |
           set -euo pipefail
           rm -f -- \
             "${CONNECTIVITY_SECRET_FILE}" \
+            "${CODEX_SUMMARY_FILE}" \
             "${HOME}/.codex/auth.json" \
             "${HOME}/.codex/config.toml"
           rmdir --ignore-fail-on-non-empty -- "${HOME}/.codex"
