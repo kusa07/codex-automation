@@ -52,8 +52,8 @@ Before beginning a new phase:
 | Phase 5 | GitHub Actions → WIF → Secret Manager connectivity | Complete |
 | Phase 6A | Restore `auth.json` and verify Codex authentication | Complete |
 | Phase 6B | Execute a real read-only Codex task | Complete |
-| Phase 7 | Repository-level serialization and queueing | Next |
-| Phase 8 | Safe `auth.json` update and persistence lifecycle | Planned |
+| Phase 7 | Repository-level serialization and queueing | Complete |
+| Phase 8 | Safe `auth.json` update and persistence lifecycle | Next |
 | Phase 9 | Issue → `codex-ready` → validated Codex task input | Planned |
 | Phase 10 | Codex implementation → branch / commit / Pull Request | Planned |
 | Phase 11 | Failure handling, result reporting, and end-to-end validation | Planned |
@@ -61,7 +61,7 @@ Before beginning a new phase:
 
 Current authoritative position:
 
-> Phase 6B is complete. Phase 7 is the next implementation phase.
+> Phase 7 is complete. Phase 8 is the next implementation phase.
 
 ## 4. Phase definitions
 
@@ -280,7 +280,7 @@ Completion criteria:
 
 Status:
 
-Next.
+Complete.
 
 ---
 
@@ -319,7 +319,7 @@ Completion criteria:
 
 Status:
 
-Planned.
+Next.
 
 ---
 
