@@ -128,6 +128,39 @@ A successful infrastructure execution means:
 
 A successful Codex process does not automatically mean that the resulting code should be merged.
 
+## Authentication persistence lifecycle
+
+At preflight, normal operation requires exactly one enabled Secret Manager version. The workflow records its numeric version ID and retrieves that exact version. Zero or multiple enabled versions are an ambiguous recovery state and fail closed; the workflow must not select `latest` or guess which state is authoritative.
+
+The workflow records a non-logged SHA-256 baseline before Codex execution and preserves the Codex process exit code while authentication handling completes.
+
+If `auth.json` is unchanged:
+
+- no new Secret Manager version is created
+- no version is disabled or destroyed
+
+If `auth.json` changed:
+
+1. retain the Codex task result for separate final evaluation
+2. validate the local candidate with `codex login status`
+3. reauthenticate to Google Cloud only for persistence
+4. add a candidate Secret Manager version from the file
+5. record the numeric candidate version ID
+6. read back that exact candidate version
+7. verify byte equality with the local candidate
+8. install the read-back file and validate it as ChatGPT authentication
+9. disable the previous authoritative version only after every validation succeeds
+10. verify that the candidate is the only enabled version
+11. finally evaluate the retained Codex task result
+
+Candidate payloads, hashes, and authentication status output are not logged. Runtime handling never destroys a Secret version.
+
+## Interrupted authentication adoption
+
+An interruption before the previous version is disabled may leave both the previous version and a candidate enabled. The next run must fail preflight because multiple enabled versions are ambiguous.
+
+Do not automatically repair this state and do not choose the newest or `latest` version. An operator must inspect non-payload version metadata, identify the known-good state through an explicit recovery procedure, and restore the one-enabled-version invariant. Secret payloads and `auth.json` must not be printed during recovery.
+
 ## 5. Codex failure
 
 If Codex fails:
@@ -180,6 +213,8 @@ If Codex changed `auth.json` but the new version cannot be safely persisted:
 
 - the job must not report full success
 - the previous secret version must not be destroyed
+- the previous secret version must remain enabled when adoption has not completed
+- a created but unadopted candidate should be disabled when possible
 - recovery information must be preserved
 - further automated execution using uncertain authentication state may need to stop
 

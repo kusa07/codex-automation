@@ -60,6 +60,7 @@ jobs:
       - name: Retrieve and validate caller Secret
         env:
           CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
+          AUTHORITATIVE_VERSION_FILE: ${{ runner.temp }}/codex-authoritative-version.txt
         shell: bash
         run: |
           set -euo pipefail
@@ -74,7 +75,25 @@ jobs:
             exit 1
           }
 
-          gcloud secrets versions access latest \
+          mapfile -t enabled_versions < <(
+            gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" \
+              --project="${GOOGLE_CLOUD_PROJECT_ID}" \
+              --filter='state=ENABLED' \
+              --format='value(name.basename())'
+          )
+          [[ ${#enabled_versions[@]} -eq 1 ]] || {
+            echo "Expected exactly one enabled authentication version" >&2
+            exit 1
+          }
+          authoritative_version="${enabled_versions[0]}"
+          [[ "${authoritative_version}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Authoritative authentication version ID is invalid" >&2
+            exit 1
+          }
+          printf '%s\n' "${authoritative_version}" > "${AUTHORITATIVE_VERSION_FILE}"
+          chmod 600 -- "${AUTHORITATIVE_VERSION_FILE}"
+
+          gcloud secrets versions access "${authoritative_version}" \
             --project="${GOOGLE_CLOUD_PROJECT_ID}" \
             --secret="${CONNECTIVITY_SECRET_ID}" \
             --out-file="${CONNECTIVITY_SECRET_FILE}" \
@@ -126,6 +145,8 @@ jobs:
           echo "Codex CLI installed"
 
       - name: Confirm Codex authentication
+        env:
+          AUTH_BASELINE_HASH_FILE: ${{ runner.temp }}/codex-auth-baseline.sha256
         shell: bash
         run: |
           set -euo pipefail
@@ -138,10 +159,13 @@ jobs:
             echo "Codex authentication is not a ChatGPT login" >&2
             exit 1
           }
+          sha256sum "${HOME}/.codex/auth.json" | cut -d ' ' -f 1 > "${AUTH_BASELINE_HASH_FILE}"
+          chmod 600 -- "${AUTH_BASELINE_HASH_FILE}"
           echo "Codex authentication recognized"
 
       - name: Run read-only Codex repository summary
         env:
+          CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
           CODEX_SUMMARY_FILE: ${{ runner.temp }}/codex-repository-summary.txt
         shell: bash
         run: |
@@ -170,9 +194,169 @@ jobs:
             >/dev/null 2>&1
           codex_exit_code=$?
           set -e
+          printf '%s\n' "${codex_exit_code}" > "${CODEX_EXIT_CODE_FILE}"
+          chmod 600 -- "${CODEX_EXIT_CODE_FILE}"
 
           [[ -z "$(git status --porcelain --untracked-files=all)" ]] || {
             echo "Caller repository changed during Codex execution" >&2
+            exit 1
+          }
+
+      - name: Detect and validate changed authentication state
+        id: auth_change
+        env:
+          AUTH_BASELINE_HASH_FILE: ${{ runner.temp }}/codex-auth-baseline.sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          auth_file="${HOME}/.codex/auth.json"
+          [[ -s "${auth_file}" && -s "${AUTH_BASELINE_HASH_FILE}" ]] || {
+            echo "Authentication comparison state is unavailable" >&2
+            exit 1
+          }
+          baseline_hash="$(<"${AUTH_BASELINE_HASH_FILE}")"
+          current_hash="$(sha256sum "${auth_file}" | cut -d ' ' -f 1)"
+          if [[ "${current_hash}" == "${baseline_hash}" ]]; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "Codex authentication state is unchanged"
+            exit 0
+          fi
+
+          if ! login_status="$(codex login status 2>&1)"; then
+            echo "Changed Codex authentication state was not recognized" >&2
+            exit 1
+          fi
+          [[ "${login_status}" == *"Logged in using ChatGPT"* ]] || {
+            echo "Changed Codex authentication state is not a ChatGPT login" >&2
+            exit 1
+          }
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+          echo "Changed Codex authentication state is a valid local candidate"
+
+      - name: Reauthenticate to Google Cloud for authentication persistence
+        if: steps.auth_change.outputs.changed == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          workload_identity_provider: ${{ inputs.workload_identity_provider }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Persist and adopt changed authentication state
+        id: persist_auth
+        if: steps.auth_change.outputs.changed == 'true'
+        env:
+          AUTHORITATIVE_VERSION_FILE: ${{ runner.temp }}/codex-authoritative-version.txt
+          CANDIDATE_AUTH_FILE: ${{ runner.temp }}/codex-candidate-auth.json
+          CANDIDATE_VERSION_FILE: ${{ runner.temp }}/codex-candidate-version.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          auth_file="${HOME}/.codex/auth.json"
+          candidate_version=""
+          previous_retired=false
+          disable_unadopted_candidate() {
+            exit_code=$?
+            if [[ ${exit_code} -ne 0 && "${previous_retired}" != true && "${candidate_version}" =~ ^[1-9][0-9]*$ ]]; then
+              gcloud secrets versions disable "${candidate_version}" \
+                --project="${GOOGLE_CLOUD_PROJECT_ID}" \
+                --secret="${CONNECTIVITY_SECRET_ID}" \
+                --quiet >/dev/null 2>&1 || true
+            fi
+            exit "${exit_code}"
+          }
+          trap disable_unadopted_candidate EXIT
+
+          [[ -s "${auth_file}" && -s "${AUTHORITATIVE_VERSION_FILE}" ]] || {
+            echo "Authentication persistence state is unavailable" >&2
+            exit 1
+          }
+          authoritative_version="$(<"${AUTHORITATIVE_VERSION_FILE}")"
+          [[ "${authoritative_version}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Previous authentication version ID is invalid" >&2
+            exit 1
+          }
+
+          candidate_resource="$(
+            gcloud secrets versions add "${CONNECTIVITY_SECRET_ID}" \
+              --project="${GOOGLE_CLOUD_PROJECT_ID}" \
+              --data-file="${auth_file}" \
+              --format='value(name)' \
+              --quiet
+          )"
+          candidate_version="${candidate_resource##*/}"
+          [[ "${candidate_version}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Candidate authentication version ID is invalid" >&2
+            exit 1
+          }
+          printf '%s\n' "${candidate_version}" > "${CANDIDATE_VERSION_FILE}"
+          chmod 600 -- "${CANDIDATE_VERSION_FILE}"
+
+          gcloud secrets versions access "${candidate_version}" \
+            --project="${GOOGLE_CLOUD_PROJECT_ID}" \
+            --secret="${CONNECTIVITY_SECRET_ID}" \
+            --out-file="${CANDIDATE_AUTH_FILE}" \
+            --quiet
+          [[ -s "${CANDIDATE_AUTH_FILE}" ]] || {
+            echo "Candidate authentication read-back is empty" >&2
+            exit 1
+          }
+          [[ "$(sha256sum "${auth_file}" | cut -d ' ' -f 1)" == "$(sha256sum "${CANDIDATE_AUTH_FILE}" | cut -d ' ' -f 1)" ]] || {
+            echo "Candidate authentication read-back does not match" >&2
+            exit 1
+          }
+
+          install -m 600 -- "${CANDIDATE_AUTH_FILE}" "${auth_file}"
+          if ! login_status="$(codex login status 2>&1)"; then
+            echo "Stored candidate authentication was not recognized" >&2
+            exit 1
+          fi
+          [[ "${login_status}" == *"Logged in using ChatGPT"* ]] || {
+            echo "Stored candidate authentication is not a ChatGPT login" >&2
+            exit 1
+          }
+
+          gcloud secrets versions disable "${authoritative_version}" \
+            --project="${GOOGLE_CLOUD_PROJECT_ID}" \
+            --secret="${CONNECTIVITY_SECRET_ID}" \
+            --quiet
+          previous_retired=true
+
+          mapfile -t enabled_versions < <(
+            gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" \
+              --project="${GOOGLE_CLOUD_PROJECT_ID}" \
+              --filter='state=ENABLED' \
+              --format='value(name.basename())'
+          )
+          [[ ${#enabled_versions[@]} -eq 1 && "${enabled_versions[0]}" == "${candidate_version}" ]] || {
+            echo "Authentication version invariant was not established" >&2
+            exit 1
+          }
+          trap - EXIT
+          echo "Changed Codex authentication state was safely adopted"
+
+      - name: Evaluate Codex task result
+        if: >-
+          always() &&
+          steps.auth_change.outcome == 'success' &&
+          (steps.auth_change.outputs.changed != 'true' || steps.persist_auth.outcome == 'success')
+        env:
+          CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
+          CODEX_SUMMARY_FILE: ${{ runner.temp }}/codex-repository-summary.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -s "${CODEX_EXIT_CODE_FILE}" ]] || {
+            echo "Codex exit status is unavailable" >&2
+            exit 1
+          }
+          codex_exit_code="$(<"${CODEX_EXIT_CODE_FILE}")"
+          [[ "${codex_exit_code}" =~ ^[0-9]+$ ]] || {
+            echo "Codex exit status is invalid" >&2
             exit 1
           }
           [[ ${codex_exit_code} -eq 0 ]] || {
@@ -183,19 +367,31 @@ jobs:
             echo "Codex repository summary is empty" >&2
             exit 1
           }
-
           echo "Codex repository summary:"
           cat -- "${CODEX_SUMMARY_FILE}"
 
       - name: Remove temporary authentication files
         if: always()
         env:
+          AUTHORITATIVE_VERSION_FILE: ${{ runner.temp }}/codex-authoritative-version.txt
+          AUTH_BASELINE_HASH_FILE: ${{ runner.temp }}/codex-auth-baseline.sha256
+          CANDIDATE_AUTH_FILE: ${{ runner.temp }}/codex-candidate-auth.json
+          CANDIDATE_VERSION_FILE: ${{ runner.temp }}/codex-candidate-version.txt
+          CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
           CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
           CODEX_SUMMARY_FILE: ${{ runner.temp }}/codex-repository-summary.txt
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" ]]; then
+            rm -f -- "${GOOGLE_GHA_CREDS_PATH}"
+          fi
           rm -f -- \
+            "${AUTHORITATIVE_VERSION_FILE}" \
+            "${AUTH_BASELINE_HASH_FILE}" \
+            "${CANDIDATE_AUTH_FILE}" \
+            "${CANDIDATE_VERSION_FILE}" \
+            "${CODEX_EXIT_CODE_FILE}" \
             "${CONNECTIVITY_SECRET_FILE}" \
             "${CODEX_SUMMARY_FILE}" \
             "${HOME}/.codex/auth.json" \

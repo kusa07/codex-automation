@@ -99,7 +99,9 @@ Jobs sharing the same authentication state must execute serially.
 
 Codex may update authentication state while running.
 
-Before execution, the automation records whether `auth.json` changes.
+At normal run start, exactly one Secret Manager version must be enabled. Zero enabled versions or multiple enabled versions are ambiguous states and must fail closed. The workflow records the numeric authoritative version ID and reads that exact version; it must not select the authoritative state through `latest`.
+
+Before execution, the automation records a SHA-256 digest of `auth.json` without logging the credential or its digest.
 
 After execution:
 
@@ -108,7 +110,16 @@ After execution:
 
 A change and a usable new authentication state are separate determinations. The candidate version must be verified after storage and adopted as the next authoritative state only when validation succeeds. This rule also applies when Codex exits abnormally; a changed file must not be accepted unconditionally.
 
-If validation fails, the previous version must remain enabled and must not be destroyed, and the job must not report success.
+Validation requires all of the following:
+
+- the changed local file is recognized by `codex login status` as a ChatGPT login
+- the exact candidate version can be read back
+- the read-back bytes match the local candidate
+- the stored candidate is recognized by Codex as a ChatGPT login
+
+If validation fails before adoption, the previous version must remain enabled and must not be destroyed. A created but unadopted candidate should be disabled when possible, and the job must not report success.
+
+Secret payloads, `auth.json`, and comparison hashes must not be printed or passed through workflow outputs. Phase 8 does not destroy Secret versions.
 
 ## 10. Secret retirement
 
@@ -133,6 +144,10 @@ later cleanup / destroy
 ```
 
 If candidate validation fails, the previous version remains authoritative and enabled; it is neither disabled nor destroyed, and the failure is reported.
+
+Only after the candidate passes local, storage, byte-equivalence, and stored-authentication validation may the previous authoritative version be disabled. The workflow must then verify that exactly one enabled version remains and that it is the adopted candidate.
+
+An interrupted workflow may leave multiple versions enabled. A later run must fail closed at preflight rather than guess, automatically select `latest`, or attempt automatic repair. Recovery requires explicit operational review.
 
 Permanent destruction must not happen merely because an upload command returned success.
 

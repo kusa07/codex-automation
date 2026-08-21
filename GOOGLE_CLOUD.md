@@ -194,7 +194,20 @@ The seed is created only in a trusted interactive environment. The file is never
 
 ## 14. Authentication state lifecycle
 
+The normal steady state is:
+
 ```text
+Version N: ENABLED / authoritative
+retained previous versions: DISABLED
+
+exactly one enabled version
+    =
+authoritative authentication state
+```
+
+```text
+preflight: exactly one enabled version
+    ↓ record numeric Version N
 Version N (authoritative / enabled)
     ↓ Codex execution
 auth.json changed?
@@ -203,21 +216,29 @@ NO
     -> create no new version
 
 YES
+    -> validate changed local state as ChatGPT authentication
     -> create Version N+1 as candidate
-    -> verify storage
-    -> verify authentication usability
+    -> read back exact numeric Version N+1
+    -> verify byte equality
+    -> install read-back and verify ChatGPT authentication usability
 
 validation OK
     -> adopt Version N+1
     -> disable Version N
+    -> verify Version N+1 is the only enabled version
 
 validation NG
     -> keep Version N enabled
+    -> disable an unadopted Version N+1 when possible
     -> do not retire Version N
     -> do not report the job as successful
 ```
 
-A changed `auth.json` and a valid new authentication state are separate conditions. Phase 1 does not implement this lifecycle.
+A changed `auth.json` and a valid new authentication state are separate conditions. The authoritative version is never selected with `latest`; normal execution requires exactly one enabled version and accesses its recorded numeric ID.
+
+The Codex process exit code is preserved while authentication lifecycle handling runs. A changed authentication file is assessed and, when valid, persisted before the task result is finally reported, including when Codex exits abnormally.
+
+If interruption leaves multiple versions enabled, the next run fails closed. It does not guess which version is authoritative and does not perform automatic repair.
 
 ## 15. Destruction lifecycle
 
@@ -230,6 +251,8 @@ Runtime lifecycle:
 - verify
 - adopt
 - disable the previous version
+
+The runtime lifecycle does not destroy Secret versions. A candidate that fails before adoption should be disabled when possible while the previous authoritative version remains enabled.
 
 Cleanup lifecycle:
 
