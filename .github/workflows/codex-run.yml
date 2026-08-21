@@ -88,14 +88,67 @@ jobs:
           }
           echo "Retrieved file is non-empty"
 
-      - name: Remove temporary Secret file
+      - name: Restore Codex authentication file
+        env:
+          CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          codex_home="${HOME}/.codex"
+          auth_file="${codex_home}/auth.json"
+          config_file="${codex_home}/config.toml"
+
+          [[ ! -e "${auth_file}" && ! -e "${config_file}" ]] || {
+            echo "Refusing to replace an existing Codex authentication configuration" >&2
+            exit 1
+          }
+
+          install -d -m 700 -- "${codex_home}"
+          install -m 600 -- "${CONNECTIVITY_SECRET_FILE}" "${auth_file}"
+          printf '%s\n' 'cli_auth_credentials_store = "file"' > "${config_file}"
+          chmod 600 -- "${config_file}"
+          echo "Codex authentication file restored"
+
+      - name: Install pinned Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global @openai/codex@0.148.0
+          [[ "$(codex --version)" == "codex-cli 0.148.0" ]] || {
+            echo "Installed Codex CLI version does not match the pinned version" >&2
+            exit 1
+          }
+          echo "Codex CLI installed"
+
+      - name: Confirm Codex authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! login_status="$(codex login status 2>&1)"; then
+            echo "Codex authentication was not recognized" >&2
+            exit 1
+          fi
+          [[ "${login_status}" == *"Logged in using ChatGPT"* ]] || {
+            echo "Codex authentication is not a ChatGPT login" >&2
+            exit 1
+          }
+          echo "Codex authentication recognized"
+
+      - name: Remove temporary authentication files
         if: always()
         env:
           CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
         shell: bash
         run: |
           set -euo pipefail
-          rm -f -- "${CONNECTIVITY_SECRET_FILE}"
-          echo "Temporary Secret file removed"
+          rm -f -- \
+            "${CONNECTIVITY_SECRET_FILE}" \
+            "${HOME}/.codex/auth.json" \
+            "${HOME}/.codex/config.toml"
+          rmdir --ignore-fail-on-non-empty -- "${HOME}/.codex"
+          echo "Temporary authentication files removed"
 
 
