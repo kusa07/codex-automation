@@ -6,12 +6,12 @@ A reusable automation layer connecting ChatGPT, GitHub, and Codex across multipl
 
 `codex-automation` is a shared automation foundation for a development flow built around:
 
-User  
-↕  
-ChatGPT  
-↕  
-GitHub  
-↕  
+User
+↕
+ChatGPT
+↕
+GitHub
+↕
 Codex
 
 The goal is to allow multiple GitHub repositories to use the same Codex execution infrastructure without duplicating authentication, security, workflow, and operational logic in every project.
@@ -47,51 +47,96 @@ Individual application repositories remain responsible for:
 
 ## Status
 
-This repository is currently in the **design phase**.
+Implementation is in progress.
 
-The initial version intentionally contains architecture and operational documentation only.
+The foundational execution path has been validated through:
 
-GitHub Actions workflows, scripts, and Google Cloud infrastructure will be implemented after the design is reviewed and stabilized.
+- GitHub Actions reusable workflow execution
+- GitHub OIDC
+- Google Cloud Workload Identity Federation
+- caller-specific Secret Manager access
+- Codex `auth.json` restoration
+- ChatGPT-authenticated Codex CLI execution
+- a real read-only Codex task against a caller repository
+
+The authoritative implementation phases, current project position, completion criteria, and next planned work are maintained in:
+
+- `ROADMAP.md`
+
+Do not infer the current phase from this README alone.
 
 ## Repository model
 
 Example:
 
-```text
-interest-gacha
-    |
-    | thin caller workflow
-    v
-codex-automation
-    |
-    | reusable workflow
-    v
-GitHub-hosted runner
-    |
-    +--> Google Cloud Workload Identity Federation
-    |
-    +--> Secret Manager
-    |
-    +--> Codex CLI
-    |
-    v
-interest-gacha branch / Pull Request
-```
+    interest-gacha
+        |
+        | thin caller workflow
+        v
+    codex-automation
+        |
+        | reusable workflow
+        v
+    GitHub-hosted runner
+        |
+        +--> Google Cloud Workload Identity Federation
+        |
+        +--> Secret Manager
+        |
+        +--> Codex CLI
+        |
+        v
+    interest-gacha branch / Pull Request
 
 ## Documentation
 
+- `ROADMAP.md`
+  - authoritative implementation phases, current position, and completion criteria
+
+- `AGENTS.md`
+  - repository-level instructions for Codex and other implementation agents
+
 - `ARCHITECTURE.md`
   - overall architecture and component responsibilities
+
 - `GOOGLE_CLOUD.md`
   - Google Cloud / Workload Identity Federation / Secret Manager architecture
+
 - `CONTRACT.md`
-  - interface between caller repositories and codex-automation
+  - interface between caller repositories and `codex-automation`
+
 - `PROTOCOL.md`
   - Issue / Codex / PR / Decision operating protocol
+
 - `SECURITY.md`
   - authentication and security rules
+
 - `OPERATIONS.md`
   - operational lifecycle, failures, and recovery
+
+## Roadmap authority
+
+`ROADMAP.md` is the single source of truth for:
+
+- phase numbering
+- phase names
+- phase order
+- phase completion state
+- the current implementation position
+
+Phase structure should not be changed only in conversation or an individual implementation session.
+
+Changes to the roadmap should be explicitly proposed, reviewed, and reflected in `ROADMAP.md`.
+
+## Agent workflow
+
+Codex and other implementation agents working on this repository should begin by reading:
+
+1. `AGENTS.md`
+2. `ROADMAP.md`
+3. the design documents relevant to the requested task
+
+This keeps implementation aligned with the same project state used by the User and ChatGPT.
 
 ## Public repository policy
 
