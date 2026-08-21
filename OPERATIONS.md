@@ -60,6 +60,61 @@ A new run must not simply replace or cancel the Codex job already in progress. T
 
 The exact execution order, queue behavior, and YAML syntax will be defined precisely during workflow implementation.
 
+## Repository serialization validation
+
+Repository-level serialization must be validated using two runs from the same
+caller repository.
+
+### Procedure
+
+1. Dispatch the caller workflow once.
+2. Wait 10 seconds.
+3. Dispatch the same caller workflow again.
+4. Stop issuing additional runs and observe the two runs.
+
+The two dispatches should normally be performed by the agent rather than
+requiring manual human timing.
+
+### Expected intermediate state
+
+While the first run is still executing:
+
+- the first run continues running
+- the second run waits in the concurrency queue
+- the second run does not execute Codex concurrently with the first run
+- the second run does not cancel the first run
+
+### Expected completion state
+
+After the first run completes:
+
+- the first run completes successfully
+- the second run leaves the queue and begins execution
+- the second run completes successfully
+- neither run is cancelled by the newer run
+
+### Validation boundary
+
+This validation proves that runs from the same caller repository are serialized
+and that a later run waits instead of cancelling an in-progress run.
+
+Strict FIFO ordering among multiple pending runs is not part of this validation.
+
+Different caller repositories use different repository-scoped concurrency
+groups and therefore remain independently serializable.
+
+### Safety
+
+Do not add artificial delay steps to the reusable workflow solely for this
+test unless the normal workflow duration is too short to observe queueing
+reliably.
+
+Prefer dispatching the normal workflow twice with a short delay between
+dispatches.
+
+Do not proceed to the next phase solely because both runs succeeded. Confirm
+that the expected serialization behavior was actually observed.
+
 ## 4. Successful execution
 
 A successful infrastructure execution means:

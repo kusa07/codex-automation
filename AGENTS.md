@@ -52,6 +52,38 @@ If implementation reveals that a roadmap change would be useful or necessary:
 
 Small implementation steps inside a phase do not require new phase numbers.
 
+## Automation-first operation
+
+Prefer agent-executed or automated operations over manual human steps when
+the operation can be performed safely and verified afterward.
+
+Examples include:
+
+- command execution
+- repository state checks
+- commit and SHA verification
+- approved workflow SHA migration steps
+- workflow dispatch
+- timed or repeated workflow dispatch for validation
+- result collection
+- post-operation read-back verification
+
+Human involvement should primarily remain at explicit approval and decision
+boundaries, especially for:
+
+- design decisions
+- approval of proposed file changes before modification
+- destructive or difficult-to-reverse operations
+- security boundary changes
+- unexpected states that require judgment
+- phase transitions
+
+Do not automate an operation merely to remove a human step if doing so weakens
+an existing safety boundary, approval requirement, or verification requirement.
+
+Automation does not replace explicit user approval where this repository or the
+current instructions require that approval.
+
 ## Scope discipline
 
 Implement only the requested scope.

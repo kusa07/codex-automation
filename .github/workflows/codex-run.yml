@@ -16,6 +16,9 @@ jobs:
   connectivity-test:
     name: Test direct WIF and Secret access
     runs-on: ubuntu-latest
+    concurrency:
+      group: codex-${{ github.repository_id }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
