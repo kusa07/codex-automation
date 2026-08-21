@@ -25,7 +25,6 @@ jobs:
       # This name selects a resource. Secret IAM based on repository_id is the
       # authorization boundary; the derived name is not an authorization check.
       CONNECTIVITY_SECRET_ID: codex-auth-${{ github.event.repository.name }}
-      CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
     steps:
       # auth creates an ephemeral credentials file in GITHUB_WORKSPACE for
       # setup-gcloud. Checkout is therefore required, but Git credentials are
@@ -56,6 +55,8 @@ jobs:
           version: ">= 363.0.0"
 
       - name: Retrieve and validate caller Secret
+        env:
+          CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
         shell: bash
         run: |
           set -euo pipefail
@@ -89,6 +90,8 @@ jobs:
 
       - name: Remove temporary Secret file
         if: always()
+        env:
+          CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
         shell: bash
         run: |
           set -euo pipefail
