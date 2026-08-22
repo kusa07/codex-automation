@@ -26,6 +26,11 @@ A caller repository SHOULD provide project-specific Codex guidance through mecha
 
 The caller workflow is also responsible for explicitly declaring the GitHub Actions permissions required by the reusable workflow. In Phase 9 these are `contents: read`, `issues: read`, and `id-token: write`. A reusable workflow cannot elevate permissions beyond those granted by its caller.
 
+In Phase 10 the required caller permissions are `contents: write`,
+`issues: read`, `pull-requests: write`, and `id-token: write`. The write
+permissions exist only for trusted task-branch publication and Draft Pull
+Request creation.
+
 ## 3. codex-automation responsibilities
 
 `codex-automation` MUST own:
@@ -134,3 +139,25 @@ The contract does not require `codex-automation` to know:
 - project-specific historical decisions
 
 Those remain caller responsibilities.
+
+## 11. Phase 10 publication contract
+
+The caller remains a thin adapter. It passes the Issue number and fixed Google
+Cloud infrastructure inputs and grants the minimum required GitHub
+permissions. It does not implement branch naming, repository validation,
+commit, push, or Pull Request logic.
+
+The shared workflow:
+
+- resolves and validates the caller repository's current default branch
+- creates the deterministic task branch
+- gives Codex write access only to the working tree
+- keeps GitHub publication credentials outside the Codex process
+- validates the implementation before staging
+- creates one fixed-author implementation commit
+- pushes only the generated task branch
+- creates one Draft Pull Request
+
+Issue title and body are not used as branch names, commit messages, or Pull
+Request titles. Existing task branches or Pull Requests cause fail-closed
+behavior rather than update or overwrite.

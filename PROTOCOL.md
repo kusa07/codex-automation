@@ -101,6 +101,46 @@ Codex should not silently redefine product requirements.
 
 In Phase 9, this action is read-only analysis. Repository modifications, branches, commits, pushes, and Pull Request creation begin in Phase 10, not Phase 9.
 
+### Phase 10 implementation protocol
+
+```text
+open Issue with codex-ready
+    ↓
+validated Issue task
+    ↓
+trusted default branch and base commit
+    ↓
+workflow-created task branch
+    ↓
+Codex working-tree implementation
+    ↓
+authentication persistence
+    ↓
+publication validation
+    ↓
+one workflow-created commit
+    ↓
+explicit task-branch push
+    ↓
+Draft Pull Request
+    ↓
+human review
+```
+
+`codex-ready` authorizes execution. It does not authorize merge.
+
+Codex modifies the task branch working tree but does not perform Git
+administration or GitHub publication. The trusted workflow owns staging,
+commit, push, and Draft Pull Request creation.
+
+The Issue remains open and retains `codex-ready` during Phase 10. The workflow
+does not add Issue comments, approve the Pull Request, mark it ready for
+review, or merge it. The fixed Pull Request body contains `Closes #N`, so the
+Issue is closed only if the Pull Request is later merged.
+
+A Draft Pull Request is an implementation artifact awaiting review; it is not
+an approval signal.
+
 If an important ambiguity cannot be resolved safely from the repository context, execution should fail or report the ambiguity rather than inventing a major decision.
 
 ## 6. Pull Request role

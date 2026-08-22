@@ -307,3 +307,48 @@ Phase 9 live validation should confirm:
 - the Phase 8 authentication persistence lifecycle and repository cleanliness checks remain effective
 
 Branch creation, source modification, commits, pushes, and Pull Request publication are Phase 10 behavior and are not part of this operation.
+
+## 16. Phase 10 implementation publication
+
+The Phase 10 normal lifecycle is:
+
+```text
+validated Issue
+    ↓
+resolve trusted default branch
+    ↓
+verify current remote base commit
+    ↓
+reject branch or Pull Request collision
+    ↓
+create deterministic task branch
+    ↓
+run Codex with workspace-write
+    ↓
+complete authentication persistence
+    ↓
+validate repository state and implementation paths
+    ↓
+stage validated changes
+    ↓
+create one implementation commit
+    ↓
+push only the task branch
+    ↓
+create Draft Pull Request
+```
+
+Codex failure, authentication failure, or publication-validation failure
+causes commit, push, and Pull Request creation to be skipped.
+
+If push fails, no force push or automatic retry is performed.
+
+If the task branch push succeeds but Draft Pull Request creation fails, the
+remote branch and implementation commit are retained. The workflow does not
+delete the branch or retry Pull Request creation automatically.
+
+Existing generated branches or Pull Requests are collision states. Phase 10
+does not update, overwrite, delete, or suffix them.
+
+Retry, resume, recovery, detailed failure classification, and recovery of a
+pushed branch without a Pull Request belong to Phase 11.

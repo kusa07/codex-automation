@@ -194,3 +194,40 @@ Permission expansion should require an explicit reason.
 No secret, repository-specific credential, user authentication state, or sensitive infrastructure value may depend on repository privacy for protection.
 
 The design should remain safe even when all source code and documentation in this repository are publicly readable.
+
+## 14. Phase 10 GitHub publication boundary
+
+Codex must not receive a GitHub write token. Checkout uses
+`persist-credentials: false`, and Google credential files are removed before
+Codex execution. GitHub and OIDC credential environment variables are removed
+from the Codex subprocess environment.
+
+GitHub tokens are provided only to the individual metadata, push, and Pull
+Request steps that require them. Tokens must not be stored in repository
+remotes, command-line arguments, Git configuration, workflow outputs, or
+runner-local helper file contents.
+
+Git push uses a temporary `GIT_ASKPASS` helper. The helper reads the step-local
+token from its environment and returns it through Git's credential channel.
+Terminal prompting and inherited credential helpers are disabled, the push
+uses an explicit generated-branch refspec, and the helper is removed by a
+trap.
+
+Codex is prohibited from creating commits, staged changes, branches, tags,
+remotes, or Git configuration changes. Before publication, the workflow
+verifies the expected branch and base commit, empty staged state, unchanged
+repository-local Git configuration, unchanged origin URL, and unchanged refs.
+
+Changes to workflow files, local Actions, AGENTS.md, Git control files, and
+known credential-like paths are rejected. Symlinks and gitlinks are also
+rejected before and after staging. An exact copy of both the pre-Codex
+authoritative auth material and the current auth.json is rejected without
+printing contents or hashes.
+
+These checks are a restricted publication policy and known credential-artifact
+check. They are not a general secret scanner and do not claim to detect every
+possible secret.
+
+The workflow never pushes directly to the trusted default branch, never force
+pushes, and creates only a Draft Pull Request. It does not approve, mark ready,
+or merge the Pull Request automatically.

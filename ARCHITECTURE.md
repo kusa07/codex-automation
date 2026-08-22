@@ -288,3 +288,53 @@ The caller passes only Issue identity and fixed infrastructure inputs. The share
 Issue title and body are untrusted task input. They cannot change workflow permissions, authentication handling, Secret selection, credential logging rules, or the read-only sandbox. The validated content is written to a protected runner-local file and supplied to Codex as data rather than evaluated by the shell.
 
 Phase 9 ends at read-only task analysis. Repository writes, branches, commits, pushes, and Pull Requests remain Phase 10 responsibilities.
+
+## 11. Phase 10 implementation and publication path
+
+The Phase 10 path is:
+
+```text
+validated codex-ready Issue
+    ↓
+trusted caller default-branch metadata
+    ↓
+validated base commit
+    ↓
+workflow-created task branch
+    ↓
+Codex working-tree implementation
+    ↓
+authentication persistence lifecycle
+    ↓
+publication validation
+    ↓
+workflow-created commit
+    ↓
+explicit task-branch push
+    ↓
+Draft Pull Request
+    ↓
+human review
+```
+
+Codex receives a workspace-write sandbox but owns only working-tree
+implementation. It does not create or switch branches, stage files, commit,
+push, create Pull Requests, or modify GitHub state. Those operations remain
+trusted workflow responsibilities.
+
+The caller repository's default branch is obtained from current GitHub
+repository metadata and validated before checkout. The local checkout commit
+must match the current remote default-branch commit before the task branch is
+created.
+
+GitHub write credentials are isolated from Codex. Checkout credentials are not
+persisted, Google credential files are removed before Codex, and GitHub and
+OIDC credentials are removed from the Codex subprocess environment. GitHub
+tokens are scoped only to metadata and publication steps.
+
+Publication is permitted only after authentication persistence succeeds,
+Codex exits successfully, repository administrative state remains valid, and
+the implementation passes the protected-path and staged-diff gate.
+
+The resulting Pull Request is always created as a Draft. It is a review
+boundary, not approval or merge authorization.
