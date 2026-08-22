@@ -202,6 +202,20 @@ jobs:
             exit 1
           }
 
+      - name: Force semantic no-op authentication change for Phase 8 validation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AUTH_FILE="${HOME}/.codex/auth.json"
+          [[ -f "${AUTH_FILE}" ]] || {
+            echo "Codex authentication file is unavailable for Phase 8 validation" >&2
+            exit 1
+          }
+
+          printf '\n' >> "${AUTH_FILE}"
+          echo "Phase 8 candidate-path test mutation applied"
+
       - name: Detect and validate changed authentication state
         id: auth_change
         env:
