@@ -54,14 +54,14 @@ Before beginning a new phase:
 | Phase 6B | Execute a real read-only Codex task | Complete |
 | Phase 7 | Repository-level serialization and queueing | Complete |
 | Phase 8 | Safe `auth.json` update and persistence lifecycle | Complete |
-| Phase 9 | Issue → `codex-ready` → validated Codex task input | Next |
-| Phase 10 | Codex implementation → branch / commit / Pull Request | Planned |
+| Phase 9 | Issue → `codex-ready` → validated Codex task input | Complete |
+| Phase 10 | Codex implementation → branch / commit / Pull Request | Next |
 | Phase 11 | Failure handling, result reporting, and end-to-end validation | Planned |
 | Phase 12 | Multi-repository rollout and operational use | Planned |
 
 Current authoritative position:
 
-> Phase 8 is complete. Phase 9 is the next implementation phase.
+> Phase 9 is complete. Phase 10 is the next implementation phase.
 
 ## 4. Phase definitions
 
@@ -346,7 +346,7 @@ Completion criteria:
 
 Status:
 
-Next.
+Complete.
 
 ---
 
@@ -381,7 +381,7 @@ Completion criteria:
 
 Status:
 
-Planned.
+Next.
 
 ---
 
