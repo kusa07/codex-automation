@@ -25,6 +25,37 @@ the Provider, Pool, Secret, or Secret version.
 USAGE
 }
 
+resolve_gcloud() {
+  local candidate=""
+  local posix_candidate=""
+
+  candidate="$(command -v gcloud 2>/dev/null || true)"
+
+  if [[ -z "$candidate" ]]; then
+    candidate="$(command -v gcloud.cmd 2>/dev/null || true)"
+  fi
+
+  [[ -n "$candidate" ]] || {
+    echo "Required command not found: gcloud" >&2
+    exit 1
+  }
+
+  case "${candidate,,}" in
+    *.cmd|*.bat)
+      posix_candidate="${candidate%.*}"
+
+      [[ -x "$posix_candidate" ]] || {
+        echo "Windows gcloud launcher resolved to $candidate, but the sibling POSIX launcher is unavailable or not executable." >&2
+        exit 1
+      }
+
+      candidate="$posix_candidate"
+      ;;
+  esac
+
+  GCLOUD=("$candidate")
+}
+
 MODE="${1:-}"
 [[ -n "$MODE" ]] || { usage >&2; exit 2; }
 shift
@@ -37,6 +68,7 @@ WORKFLOW_IDENTITY="${WORKFLOW_IDENTITY:-kusa07/codex-automation/.github/workflow
 OLD_SHA="${OLD_SHA:-}"
 NEW_SHA="${NEW_SHA:-}"
 CONFIRM_REMOVE_OLD=false
+GCLOUD=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,7 +85,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-command -v gcloud >/dev/null 2>&1 || { echo "Required command not found: gcloud" >&2; exit 1; }
+resolve_gcloud
 [[ "$MODE" == initialize || "$MODE" == stage || "$MODE" == finalize ]] || { echo "Invalid mode: $MODE" >&2; exit 2; }
 [[ "$PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || { echo "Invalid or missing PROJECT_ID." >&2; exit 2; }
 [[ "$TRUSTED_OWNER_ID" =~ ^[0-9]+$ ]] || { echo "TRUSTED_OWNER_ID must be numeric." >&2; exit 2; }
@@ -83,12 +115,12 @@ esac
 
 ATTRIBUTE_CONDITION="assertion.repository_owner_id == '${TRUSTED_OWNER_ID}' && assertion.job_workflow_ref.startsWith('${WORKFLOW_IDENTITY}@') && assertion.job_workflow_sha in ${SHA_LIST}"
 
-gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" \
+"${GCLOUD[@]}" iam workload-identity-pools providers describe "$PROVIDER_ID" \
   --project="$PROJECT_ID" --location=global \
   --workload-identity-pool="$POOL_ID" >/dev/null
 
 echo "Updating approved workflow SHA condition in mode: $MODE"
-gcloud iam workload-identity-pools providers update-oidc "$PROVIDER_ID" \
+"${GCLOUD[@]}" iam workload-identity-pools providers update-oidc "$PROVIDER_ID" \
   --project="$PROJECT_ID" \
   --location=global \
   --workload-identity-pool="$POOL_ID" \
