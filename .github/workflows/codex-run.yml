@@ -202,20 +202,6 @@ jobs:
             exit 1
           }
 
-      - name: Force invalid authentication state for Phase 8 validation
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          AUTH_FILE="${HOME}/.codex/auth.json"
-          [[ -f "${AUTH_FILE}" ]] || {
-            echo "Codex authentication file is unavailable for Phase 8 validation" >&2
-            exit 1
-          }
-
-          printf '%s\n' 'INVALID_PHASE8_TEST' > "${AUTH_FILE}"
-          echo "Phase 8 invalid authentication validation state prepared"
-
       - name: Detect and validate changed authentication state
         id: auth_change
         env:
