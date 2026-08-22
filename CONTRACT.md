@@ -24,7 +24,7 @@ A caller repository MUST own:
 
 A caller repository SHOULD provide project-specific Codex guidance through mechanisms such as `AGENTS.md`.
 
-The caller workflow is also responsible for explicitly declaring the GitHub Actions permissions required by the reusable workflow. A reusable workflow cannot elevate permissions beyond those granted by its caller. Potential permissions include `contents: write`, `pull-requests: write`, and `id-token: write`; the exact set will be fixed during implementation according to least privilege.
+The caller workflow is also responsible for explicitly declaring the GitHub Actions permissions required by the reusable workflow. In Phase 9 these are `contents: read`, `issues: read`, and `id-token: write`. A reusable workflow cannot elevate permissions beyond those granted by its caller.
 
 ## 3. codex-automation responsibilities
 
@@ -89,14 +89,18 @@ The shared workflow identity should also be validated where possible.
 
 ## 7. Inputs
 
-The exact reusable workflow schema is intentionally not fixed in this design version.
+The Phase 9 reusable workflow contract requires:
 
-Likely caller inputs may include:
+- `issue_number`
+  - numeric identity of the Issue in the caller repository
+- `google_cloud_project_id`
+  - Google Cloud Project containing the caller-specific Secret
+- `workload_identity_provider`
+  - full resource name of the trusted Workload Identity Provider
 
-- issue identifier
-- repository context
-- task metadata
-- approved Codex execution options
+The caller detects an Issue `labeled` event, verifies that the added label is `codex-ready`, and passes the Issue number. It does not pass the Issue title or body as ordinary workflow inputs.
+
+The shared workflow retrieves the Issue from the caller repository and validates that it exists, is open, is not a Pull Request, retains the `codex-ready` label, and has non-empty title and body content. A validation failure is fail-closed and must occur before Codex execution.
 
 Infrastructure details such as raw `auth.json`, Google credentials, or Secret Manager implementation details must not be passed from the application repository as ordinary workflow data.
 
@@ -110,7 +114,7 @@ Likely outputs from the shared automation may include:
 - Pull Request identifier
 - failure classification
 
-The exact output contract will be defined during implementation design.
+Phase 9 produces a read-only Codex task analysis in sanitized workflow output. Branch, commit, and Pull Request outputs are not part of the Phase 9 contract.
 
 ## 9. Versioning
 

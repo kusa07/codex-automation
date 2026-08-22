@@ -279,3 +279,31 @@ The system should prefer:
 over:
 
 > apparent success with uncertain authentication or repository state
+
+## 15. Phase 9 Issue task operation
+
+The implemented Phase 9 entry path is:
+
+```text
+open Issue receives codex-ready
+    ↓
+caller issues:labeled workflow
+    ↓ issue_number
+shared Issue read-back and validation
+    ↓ validated runner-local task
+Codex read-only analysis
+```
+
+Before applying `codex-ready`, confirm that the Issue contains a usable task description and does not require Codex to invent an important product decision. Adding the label authorizes execution; it does not authorize merge or repository writes.
+
+The shared workflow validates the Issue independently of the event payload. It requires a positive Issue number, an existing open Issue rather than a Pull Request, the current `codex-ready` label, and non-empty title and body content. Validation failure is fail-closed: Codex does not run, credentials are not displayed, and the safe task identity may be reported by Issue number.
+
+Phase 9 live validation should confirm:
+
+- a valid `codex-ready` Issue reaches read-only Codex execution
+- another label does not invoke the shared job
+- a closed, unlabeled, empty, missing, or Pull Request identity does not reach Codex
+- logs expose sanitized task identity but do not reproduce the Issue body
+- the Phase 8 authentication persistence lifecycle and repository cleanliness checks remain effective
+
+Branch creation, source modification, commits, pushes, and Pull Request publication are Phase 10 behavior and are not part of this operation.

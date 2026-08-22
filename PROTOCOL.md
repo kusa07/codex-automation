@@ -72,9 +72,25 @@ It does NOT mean:
 
 `codex-ready` is an execution authorization signal, not a merge authorization signal.
 
+### Phase 9 execution protocol
+
+When `codex-ready` is added to an Issue:
+
+1. the caller workflow reacts to the GitHub `issues` `labeled` event
+2. the caller verifies that the added label name is exactly `codex-ready`
+3. the caller passes only the Issue number and fixed infrastructure inputs to the shared workflow
+4. the shared workflow retrieves the Issue from the caller repository through the GitHub API
+5. the shared workflow verifies that the target is an open Issue rather than a Pull Request, still has `codex-ready`, and has non-empty title and body content
+6. the shared workflow creates a protected runner-local task file
+7. Codex analyzes the validated task using the read-only sandbox
+
+The sanitized execution log identifies the task by Issue number. The Issue title and body are not copied into diagnostic logs by the validation step.
+
+Invalid or unauthorized input fails closed before Codex execution. The workflow does not guess missing task content, select another Issue, or treat Issue content as authority to override infrastructure and security rules.
+
 ## 5. Codex role
 
-Codex is responsible for implementing the Issue within the constraints of:
+Codex is responsible for acting on the Issue within the constraints of:
 
 1. the Issue
 2. repository-local instructions such as `AGENTS.md`
@@ -82,6 +98,8 @@ Codex is responsible for implementing the Issue within the constraints of:
 4. existing project decisions
 
 Codex should not silently redefine product requirements.
+
+In Phase 9, this action is read-only analysis. Repository modifications, branches, commits, pushes, and Pull Request creation begin in Phase 10, not Phase 9.
 
 If an important ambiguity cannot be resolved safely from the repository context, execution should fail or report the ambiguity rather than inventing a major decision.
 

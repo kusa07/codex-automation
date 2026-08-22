@@ -266,3 +266,25 @@ Repository names alone should not be the only trust mechanism when stronger immu
 The most important architectural rule is:
 
 > Application repositories should know how to request Codex execution, but should not need to know how Codex authentication and execution infrastructure works.
+
+## 10. Phase 9 Issue task path
+
+The Phase 9 read-only execution path is:
+
+```text
+open GitHub Issue
+    ↓ codex-ready label
+thin caller workflow
+    ↓ issue_number
+codex-automation reusable workflow
+    ↓ GitHub API read-back and validation
+runner-local validated task file
+    ↓
+Codex CLI in read-only mode
+```
+
+The caller passes only Issue identity and fixed infrastructure inputs. The shared workflow retrieves the Issue from the caller repository and verifies that it is an open Issue, is not a Pull Request, has the `codex-ready` label, and has usable title and body content before Codex can run.
+
+Issue title and body are untrusted task input. They cannot change workflow permissions, authentication handling, Secret selection, credential logging rules, or the read-only sandbox. The validated content is written to a protected runner-local file and supplied to Codex as data rather than evaluated by the shell.
+
+Phase 9 ends at read-only task analysis. Repository writes, branches, commits, pushes, and Pull Requests remain Phase 10 responsibilities.
