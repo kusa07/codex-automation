@@ -287,6 +287,22 @@ jobs:
           install -m 600 -- "${HOME}/.codex/auth.json" "${AUTHORITATIVE_AUTH_FILE}"
           echo "Codex authentication recognized"
 
+      - name: Move Google credentials outside the repository workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" && -f "${GOOGLE_GHA_CREDS_PATH}" ]]; then
+            relocated_credentials="${RUNNER_TEMP}/codex-google-credentials.json"
+            install -m 600 -- "${GOOGLE_GHA_CREDS_PATH}" "${relocated_credentials}"
+            rm -f -- "${GOOGLE_GHA_CREDS_PATH}"
+            {
+              printf 'GOOGLE_GHA_CREDS_PATH=%s\n' "${relocated_credentials}"
+              printf 'GOOGLE_APPLICATION_CREDENTIALS=%s\n' "${relocated_credentials}"
+              printf 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=%s\n' "${relocated_credentials}"
+            } >> "${GITHUB_ENV}"
+          fi
+
       - name: Prepare isolated task branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1052,8 +1068,12 @@ jobs:
             "${GIT_ASKPASS_FILE}" \
             "${HOME}/.codex/auth.json" \
             "${HOME}/.codex/config.toml"
-          rmdir --ignore-fail-on-non-empty -- "${EMPTY_HOOKS_DIR}"
-          rmdir --ignore-fail-on-non-empty -- "${HOME}/.codex"
+          if [[ -d "${EMPTY_HOOKS_DIR}" ]]; then
+            rmdir --ignore-fail-on-non-empty -- "${EMPTY_HOOKS_DIR}"
+          fi
+          if [[ -d "${HOME}/.codex" ]]; then
+            rmdir --ignore-fail-on-non-empty -- "${HOME}/.codex"
+          fi
           echo "Temporary authentication files removed"
 
 
