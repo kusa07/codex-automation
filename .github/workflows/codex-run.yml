@@ -437,14 +437,43 @@ jobs:
       - name: Run Codex Issue implementation
         env:
           CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
+          CODEX_SANITIZER_EXIT_CODE_FILE: ${{ runner.temp }}/codex-sanitizer-exit-code.txt
           CODEX_TASK_FILE: ${{ runner.temp }}/codex-task.md
           CODEX_RESULT_FILE: ${{ runner.temp }}/codex-implementation-result.txt
+          CODEX_DIAGNOSTIC_SUMMARY_FILE: ${{ runner.temp }}/codex-diagnostic-summary.txt
+          CODEX_DIAGNOSTIC_SCHEMA_FILE: ${{ runner.temp }}/codex-diagnostic-schema.json
+          CODEX_STDERR_FILE: ${{ runner.temp }}/codex-stderr.txt
+          CODEX_GIT_BEFORE_FILE: ${{ runner.temp }}/codex-git-before.txt
+          CODEX_GIT_AFTER_FILE: ${{ runner.temp }}/codex-git-after.txt
+          CODEX_DURATION_FILE: ${{ runner.temp }}/codex-duration-seconds.txt
+          CODEX_CLI_VERSION_MATCH_FILE: ${{ runner.temp }}/codex-cli-version-match.txt
           BASE_SHA_FILE: ${{ runner.temp }}/codex-base-sha.txt
           TASK_BRANCH_FILE: ${{ runner.temp }}/codex-task-branch.txt
         shell: bash
         run: |
           set -euo pipefail
           umask 077
+
+          write_git_counts() {
+            local destination="$1"
+            local tracked_count=""
+            local untracked_count=""
+            local staged_count=""
+
+            tracked_count="$(git diff --name-only --no-renames -z | tr -cd '\000' | wc -c | tr -d ' ')"
+            untracked_count="$(git ls-files --others --exclude-standard -z | tr -cd '\000' | wc -c | tr -d ' ')"
+            staged_count="$(git diff --cached --name-only --no-renames -z | tr -cd '\000' | wc -c | tr -d ' ')"
+            [[ "${tracked_count}" =~ ^[0-9]+$ && "${untracked_count}" =~ ^[0-9]+$ && "${staged_count}" =~ ^[0-9]+$ ]] || {
+              echo "Git diagnostic counts are invalid" >&2
+              exit 1
+            }
+            {
+              printf 'tracked=%s\n' "${tracked_count}"
+              printf 'untracked=%s\n' "${untracked_count}"
+              printf 'staged=%s\n' "${staged_count}"
+            } > "${destination}"
+            chmod 600 -- "${destination}"
+          }
 
           # Google Cloud access is complete. Remove its workspace credential
           # before Codex inspects the caller repository.
@@ -475,6 +504,48 @@ jobs:
             echo "Validated Codex task input is unavailable" >&2
             exit 1
           }
+
+          cat > "${CODEX_DIAGNOSTIC_SCHEMA_FILE}" <<'JSON'
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "task_outcome": {
+                "type": "string",
+                "enum": ["implemented", "blocked", "no_change", "unknown"]
+              },
+              "edit_attempted": {
+                "type": "boolean"
+              },
+              "requested_change_present_at_finish": {
+                "type": "boolean"
+              },
+              "blocker_category": {
+                "type": "string",
+                "enum": ["none", "task_ambiguity", "instruction_conflict", "workspace_write", "tool_error", "other", "unknown"]
+              }
+            },
+            "required": [
+              "task_outcome",
+              "edit_attempted",
+              "requested_change_present_at_finish",
+              "blocker_category"
+            ]
+          }
+          JSON
+          chmod 600 -- "${CODEX_DIAGNOSTIC_SCHEMA_FILE}"
+
+          if [[ "$(codex --version 2>/dev/null || true)" == "codex-cli 0.148.0" ]]; then
+            printf 'true\n' > "${CODEX_CLI_VERSION_MATCH_FILE}"
+          else
+            printf 'false\n' > "${CODEX_CLI_VERSION_MATCH_FILE}"
+          fi
+          chmod 600 -- "${CODEX_CLI_VERSION_MATCH_FILE}"
+          write_git_counts "${CODEX_GIT_BEFORE_FILE}"
+          : > "${CODEX_STDERR_FILE}"
+          chmod 600 -- "${CODEX_STDERR_FILE}"
+
+          start_seconds="${SECONDS}"
           set +e
           env \
             -u GH_TOKEN \
@@ -488,13 +559,99 @@ jobs:
             --sandbox workspace-write \
             --ephemeral \
             --cd "${GITHUB_WORKSPACE}" \
+            --json \
+            --output-schema "${CODEX_DIAGNOSTIC_SCHEMA_FILE}" \
             --output-last-message "${CODEX_RESULT_FILE}" \
             - < "${CODEX_TASK_FILE}" \
-            >/dev/null 2>&1
-          codex_exit_code=$?
+            2> "${CODEX_STDERR_FILE}" |
+            python3 -c '
+          import json
+          import sys
+          from pathlib import Path
+
+          output_path = Path(sys.argv[1])
+          counters = {
+              "total_events": 0,
+              "thread_started": 0,
+              "turn_started": 0,
+              "turn_completed": 0,
+              "turn_failed": 0,
+              "error_events": 0,
+              "unknown_event_types": 0,
+              "unknown_item_types": 0,
+              "json_parse_errors": 0,
+          }
+          item_ids = {
+              "command_execution": set(),
+              "file_change": set(),
+              "agent_message": set(),
+              "reasoning": set(),
+          }
+          event_counters = {
+              "thread.started": "thread_started",
+              "turn.started": "turn_started",
+              "turn.completed": "turn_completed",
+              "turn.failed": "turn_failed",
+              "error": "error_events",
+          }
+
+          for line in sys.stdin:
+              counters["total_events"] += 1
+              try:
+                  event = json.loads(line)
+              except json.JSONDecodeError:
+                  counters["json_parse_errors"] += 1
+                  continue
+              if not isinstance(event, dict):
+                  counters["unknown_event_types"] += 1
+                  continue
+              event_type = event.get("type")
+              if event_type in event_counters:
+                  counters[event_counters[event_type]] += 1
+                  continue
+              if event_type not in {"item.started", "item.completed"}:
+                  counters["unknown_event_types"] += 1
+                  continue
+              item = event.get("item")
+              if not isinstance(item, dict):
+                  counters["unknown_item_types"] += 1
+                  continue
+              item_type = item.get("type")
+              item_id = item.get("id")
+              if item_type not in item_ids or not isinstance(item_id, str):
+                  counters["unknown_item_types"] += 1
+                  continue
+              item_ids[item_type].add(item_id)
+
+          lines = [
+              "jsonl_valid=" + ("true" if counters["json_parse_errors"] == 0 else "false"),
+              "total_events=" + str(counters["total_events"]),
+              "thread_started=" + str(counters["thread_started"]),
+              "turn_started=" + str(counters["turn_started"]),
+              "turn_completed=" + str(counters["turn_completed"]),
+              "turn_failed=" + str(counters["turn_failed"]),
+              "error_events=" + str(counters["error_events"]),
+              "command_execution_items=" + str(len(item_ids["command_execution"])),
+              "file_change_items=" + str(len(item_ids["file_change"])),
+              "agent_message_items=" + str(len(item_ids["agent_message"])),
+              "reasoning_items=" + str(len(item_ids["reasoning"])),
+              "unknown_event_types=" + str(counters["unknown_event_types"]),
+              "unknown_item_types=" + str(counters["unknown_item_types"]),
+              "json_parse_errors=" + str(counters["json_parse_errors"]),
+          ]
+          output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          output_path.chmod(0o600)
+          ' "${CODEX_DIAGNOSTIC_SUMMARY_FILE}"
+          pipeline_status=("${PIPESTATUS[@]}")
           set -e
+          codex_exit_code="${pipeline_status[0]}"
+          sanitizer_exit_code="${pipeline_status[1]}"
           printf '%s\n' "${codex_exit_code}" > "${CODEX_EXIT_CODE_FILE}"
+          printf '%s\n' "${sanitizer_exit_code}" > "${CODEX_SANITIZER_EXIT_CODE_FILE}"
+          printf '%s\n' "$((SECONDS - start_seconds))" > "${CODEX_DURATION_FILE}"
           chmod 600 -- "${CODEX_EXIT_CODE_FILE}"
+          chmod 600 -- "${CODEX_SANITIZER_EXIT_CODE_FILE}" "${CODEX_DURATION_FILE}"
+          write_git_counts "${CODEX_GIT_AFTER_FILE}"
 
       - name: Detect and validate changed authentication state
         id: auth_change
@@ -640,7 +797,9 @@ jobs:
           (steps.auth_change.outputs.changed != 'true' || steps.persist_auth.outcome == 'success')
         env:
           CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
+          CODEX_SANITIZER_EXIT_CODE_FILE: ${{ runner.temp }}/codex-sanitizer-exit-code.txt
           CODEX_RESULT_FILE: ${{ runner.temp }}/codex-implementation-result.txt
+          CODEX_DIAGNOSTIC_SUMMARY_FILE: ${{ runner.temp }}/codex-diagnostic-summary.txt
         shell: bash
         run: |
           set -euo pipefail
@@ -660,11 +819,178 @@ jobs:
             echo "Codex Issue implementation failed" >&2
             exit "${codex_exit_code}"
           }
+          [[ -s "${CODEX_SANITIZER_EXIT_CODE_FILE}" ]] || {
+            echo "Codex diagnostic sanitizer status is unavailable" >&2
+            exit 1
+          }
+          sanitizer_exit_code="$(<"${CODEX_SANITIZER_EXIT_CODE_FILE}")"
+          [[ "${sanitizer_exit_code}" == "0" ]] || {
+            echo "Codex diagnostic sanitizer failed" >&2
+            exit 1
+          }
+          [[ -s "${CODEX_DIAGNOSTIC_SUMMARY_FILE}" ]] || {
+            echo "Codex diagnostic summary is unavailable" >&2
+            exit 1
+          }
           [[ -s "${CODEX_RESULT_FILE}" ]] || {
             echo "Codex implementation result is empty" >&2
             exit 1
           }
           echo "Codex Issue implementation completed"
+
+      - name: Report sanitized Codex diagnostics
+        if: always()
+        env:
+          CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
+          CODEX_SANITIZER_EXIT_CODE_FILE: ${{ runner.temp }}/codex-sanitizer-exit-code.txt
+          CODEX_RESULT_FILE: ${{ runner.temp }}/codex-implementation-result.txt
+          CODEX_DIAGNOSTIC_SUMMARY_FILE: ${{ runner.temp }}/codex-diagnostic-summary.txt
+          CODEX_STDERR_FILE: ${{ runner.temp }}/codex-stderr.txt
+          CODEX_GIT_BEFORE_FILE: ${{ runner.temp }}/codex-git-before.txt
+          CODEX_GIT_AFTER_FILE: ${{ runner.temp }}/codex-git-after.txt
+          CODEX_DURATION_FILE: ${{ runner.temp }}/codex-duration-seconds.txt
+          CODEX_CLI_VERSION_MATCH_FILE: ${{ runner.temp }}/codex-cli-version-match.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c '
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          paths = {name: Path(value) for name, value in zip(
+              ("exit", "sanitizer", "result", "summary", "stderr", "before", "after", "duration", "version"),
+              sys.argv[1:],
+          )}
+          numeric = re.compile(r"^[0-9]+$")
+          boolean = re.compile(r"^(true|false)$")
+          summary_keys = (
+              "jsonl_valid", "total_events", "thread_started", "turn_started", "turn_completed",
+              "turn_failed", "error_events", "command_execution_items", "file_change_items",
+              "agent_message_items", "reasoning_items", "unknown_event_types", "unknown_item_types",
+              "json_parse_errors",
+          )
+
+          def read_single(path, pattern, default):
+              try:
+                  value = path.read_text(encoding="utf-8").strip()
+              except OSError:
+                  return default
+              return value if pattern.fullmatch(value) else default
+
+          def read_counts(path):
+              values = {"tracked": "0", "untracked": "0", "staged": "0"}
+              try:
+                  lines = path.read_text(encoding="utf-8").splitlines()
+              except OSError:
+                  return values
+              if len(lines) != 3:
+                  return values
+              parsed = {}
+              for line in lines:
+                  key, separator, value = line.partition("=")
+                  if separator != "=" or key not in values or not numeric.fullmatch(value):
+                      return values
+                  parsed[key] = value
+              return parsed if set(parsed) == set(values) else values
+
+          summary = {key: ("false" if key == "jsonl_valid" else "0") for key in summary_keys}
+          try:
+              lines = paths["summary"].read_text(encoding="utf-8").splitlines()
+          except OSError:
+              lines = []
+          if len(lines) == len(summary_keys):
+              candidate = {}
+              for line in lines:
+                  key, separator, value = line.partition("=")
+                  if separator != "=" or key not in summary or key in candidate:
+                      candidate = {}
+                      break
+                  if key == "jsonl_valid":
+                      if not boolean.fullmatch(value):
+                          candidate = {}
+                          break
+                  elif not numeric.fullmatch(value):
+                      candidate = {}
+                      break
+                  candidate[key] = value
+              if set(candidate) == set(summary):
+                  summary = candidate
+
+          structured = {
+              "task_outcome": "unknown",
+              "edit_attempted": "false",
+              "requested_change_present_at_finish": "false",
+              "blocker_category": "unknown",
+          }
+          try:
+              result = json.loads(paths["result"].read_text(encoding="utf-8"))
+          except (OSError, json.JSONDecodeError):
+              result = None
+          if (
+              isinstance(result, dict)
+              and set(result) == set(structured)
+              and result.get("task_outcome") in {"implemented", "blocked", "no_change", "unknown"}
+              and type(result.get("edit_attempted")) is bool
+              and type(result.get("requested_change_present_at_finish")) is bool
+              and result.get("blocker_category") in {"none", "task_ambiguity", "instruction_conflict", "workspace_write", "tool_error", "other", "unknown"}
+          ):
+              structured = {
+                  "task_outcome": result["task_outcome"],
+                  "edit_attempted": str(result["edit_attempted"]).lower(),
+                  "requested_change_present_at_finish": str(result["requested_change_present_at_finish"]).lower(),
+                  "blocker_category": result["blocker_category"],
+              }
+
+          before = read_counts(paths["before"])
+          after = read_counts(paths["after"])
+          result_present = "true" if paths["result"].is_file() else "false"
+          result_bytes = str(paths["result"].stat().st_size) if paths["result"].is_file() else "0"
+          stderr_bytes = str(paths["stderr"].stat().st_size) if paths["stderr"].is_file() else "0"
+          values = {
+              "cli_version_match": read_single(paths["version"], boolean, "false"),
+              "exit_code": read_single(paths["exit"], numeric, "0"),
+              "sanitizer_exit_code": read_single(paths["sanitizer"], numeric, "0"),
+              "duration_seconds": read_single(paths["duration"], numeric, "0"),
+              "result_file_present": result_present,
+              "result_file_bytes": result_bytes,
+              "stderr_bytes": stderr_bytes,
+              **summary,
+              "git_before_tracked": before["tracked"],
+              "git_before_untracked": before["untracked"],
+              "git_before_staged": before["staged"],
+              "git_after_tracked": after["tracked"],
+              "git_after_untracked": after["untracked"],
+              "git_after_staged": after["staged"],
+              "structured_outcome": structured["task_outcome"],
+              "structured_edit_attempted": structured["edit_attempted"],
+              "structured_requested_change_present_at_finish": structured["requested_change_present_at_finish"],
+              "structured_blocker_category": structured["blocker_category"],
+          }
+          order = (
+              "cli_version_match", "exit_code", "sanitizer_exit_code", "duration_seconds",
+              "result_file_present", "result_file_bytes", "jsonl_valid", "total_events",
+              "thread_started", "turn_started", "turn_completed", "turn_failed", "error_events",
+              "command_execution_items", "file_change_items", "agent_message_items", "reasoning_items",
+              "unknown_event_types", "unknown_item_types", "json_parse_errors", "stderr_bytes",
+              "git_before_tracked", "git_before_untracked", "git_before_staged", "git_after_tracked",
+              "git_after_untracked", "git_after_staged", "structured_outcome", "structured_edit_attempted",
+              "structured_requested_change_present_at_finish", "structured_blocker_category",
+          )
+          print("Codex diagnostic summary")
+          for key in order:
+              print(f"- {key}: {values[key]}")
+          ' \
+            "${CODEX_EXIT_CODE_FILE}" \
+            "${CODEX_SANITIZER_EXIT_CODE_FILE}" \
+            "${CODEX_RESULT_FILE}" \
+            "${CODEX_DIAGNOSTIC_SUMMARY_FILE}" \
+            "${CODEX_STDERR_FILE}" \
+            "${CODEX_GIT_BEFORE_FILE}" \
+            "${CODEX_GIT_AFTER_FILE}" \
+            "${CODEX_DURATION_FILE}" \
+            "${CODEX_CLI_VERSION_MATCH_FILE}"
 
       - name: Validate and stage implementation
         env:
@@ -1014,10 +1340,18 @@ jobs:
           CANDIDATE_AUTH_FILE: ${{ runner.temp }}/codex-candidate-auth.json
           CANDIDATE_VERSION_FILE: ${{ runner.temp }}/codex-candidate-version.txt
           CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
+          CODEX_SANITIZER_EXIT_CODE_FILE: ${{ runner.temp }}/codex-sanitizer-exit-code.txt
           CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
           ISSUE_RESPONSE_FILE: ${{ runner.temp }}/codex-issue.json
           CODEX_TASK_FILE: ${{ runner.temp }}/codex-task.md
           CODEX_RESULT_FILE: ${{ runner.temp }}/codex-implementation-result.txt
+          CODEX_DIAGNOSTIC_SUMMARY_FILE: ${{ runner.temp }}/codex-diagnostic-summary.txt
+          CODEX_DIAGNOSTIC_SCHEMA_FILE: ${{ runner.temp }}/codex-diagnostic-schema.json
+          CODEX_STDERR_FILE: ${{ runner.temp }}/codex-stderr.txt
+          CODEX_GIT_BEFORE_FILE: ${{ runner.temp }}/codex-git-before.txt
+          CODEX_GIT_AFTER_FILE: ${{ runner.temp }}/codex-git-after.txt
+          CODEX_DURATION_FILE: ${{ runner.temp }}/codex-duration-seconds.txt
+          CODEX_CLI_VERSION_MATCH_FILE: ${{ runner.temp }}/codex-cli-version-match.txt
           REPOSITORY_METADATA_FILE: ${{ runner.temp }}/codex-repository-metadata.json
           BASE_BRANCH_FILE: ${{ runner.temp }}/codex-base-branch.txt
           BASE_SHA_FILE: ${{ runner.temp }}/codex-base-sha.txt
@@ -1047,10 +1381,18 @@ jobs:
             "${CANDIDATE_AUTH_FILE}" \
             "${CANDIDATE_VERSION_FILE}" \
             "${CODEX_EXIT_CODE_FILE}" \
+            "${CODEX_SANITIZER_EXIT_CODE_FILE}" \
             "${CONNECTIVITY_SECRET_FILE}" \
             "${ISSUE_RESPONSE_FILE}" \
             "${CODEX_TASK_FILE}" \
             "${CODEX_RESULT_FILE}" \
+            "${CODEX_DIAGNOSTIC_SUMMARY_FILE}" \
+            "${CODEX_DIAGNOSTIC_SCHEMA_FILE}" \
+            "${CODEX_STDERR_FILE}" \
+            "${CODEX_GIT_BEFORE_FILE}" \
+            "${CODEX_GIT_AFTER_FILE}" \
+            "${CODEX_DURATION_FILE}" \
+            "${CODEX_CLI_VERSION_MATCH_FILE}" \
             "${REPOSITORY_METADATA_FILE}" \
             "${BASE_BRANCH_FILE}" \
             "${BASE_SHA_FILE}" \
