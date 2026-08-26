@@ -587,6 +587,7 @@ jobs:
               "agent_message": set(),
               "reasoning": set(),
           }
+          file_change_terminal_statuses = {}
           event_counters = {
               "thread.started": "thread_started",
               "turn.started": "turn_started",
@@ -622,6 +623,29 @@ jobs:
                   counters["unknown_item_types"] += 1
                   continue
               item_ids[item_type].add(item_id)
+              if item_type == "file_change" and event_type == "item.completed":
+                  status = item.get("status")
+                  if status == "completed":
+                      status_bucket = "completed"
+                  elif status == "failed":
+                      status_bucket = "failed"
+                  else:
+                      status_bucket = "unknown"
+                  previous_bucket = file_change_terminal_statuses.get(item_id)
+                  if previous_bucket is None:
+                      file_change_terminal_statuses[item_id] = status_bucket
+                  elif previous_bucket != status_bucket:
+                      file_change_terminal_statuses[item_id] = "unknown"
+
+          file_change_terminal_counts = {
+              "completed": 0,
+              "failed": 0,
+              "unknown": 0,
+          }
+          for item_id in item_ids["file_change"]:
+              file_change_terminal_counts[
+                  file_change_terminal_statuses.get(item_id, "unknown")
+              ] += 1
 
           lines = [
               "jsonl_valid=" + ("true" if counters["json_parse_errors"] == 0 else "false"),
@@ -633,6 +657,9 @@ jobs:
               "error_events=" + str(counters["error_events"]),
               "command_execution_items=" + str(len(item_ids["command_execution"])),
               "file_change_items=" + str(len(item_ids["file_change"])),
+              "file_change_completed_items=" + str(file_change_terminal_counts["completed"]),
+              "file_change_failed_items=" + str(file_change_terminal_counts["failed"]),
+              "file_change_unknown_status_items=" + str(file_change_terminal_counts["unknown"]),
               "agent_message_items=" + str(len(item_ids["agent_message"])),
               "reasoning_items=" + str(len(item_ids["reasoning"])),
               "unknown_event_types=" + str(counters["unknown_event_types"]),
@@ -868,6 +895,7 @@ jobs:
           summary_keys = (
               "jsonl_valid", "total_events", "thread_started", "turn_started", "turn_completed",
               "turn_failed", "error_events", "command_execution_items", "file_change_items",
+              "file_change_completed_items", "file_change_failed_items", "file_change_unknown_status_items",
               "agent_message_items", "reasoning_items", "unknown_event_types", "unknown_item_types",
               "json_parse_errors",
           )
@@ -972,7 +1000,8 @@ jobs:
               "cli_version_match", "exit_code", "sanitizer_exit_code", "duration_seconds",
               "result_file_present", "result_file_bytes", "jsonl_valid", "total_events",
               "thread_started", "turn_started", "turn_completed", "turn_failed", "error_events",
-              "command_execution_items", "file_change_items", "agent_message_items", "reasoning_items",
+              "command_execution_items", "file_change_items", "file_change_completed_items",
+              "file_change_failed_items", "file_change_unknown_status_items", "agent_message_items", "reasoning_items",
               "unknown_event_types", "unknown_item_types", "json_parse_errors", "stderr_bytes",
               "git_before_tracked", "git_before_untracked", "git_before_staged", "git_after_tracked",
               "git_after_untracked", "git_after_staged", "structured_outcome", "structured_edit_attempted",
