@@ -15,6 +15,11 @@ on:
         description: Full resource name of the trusted Workload Identity Provider
         required: true
         type: string
+      validation_mode:
+        description: Temporary CA-P10-018 minimal workspace-write validation mode
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   connectivity-test:
@@ -94,6 +99,7 @@ jobs:
           fetch-depth: 1
 
       - name: Retrieve and validate Issue task
+        if: inputs.validation_mode != true
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -304,6 +310,7 @@ jobs:
           fi
 
       - name: Prepare isolated task branch
+        if: inputs.validation_mode != true
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -435,6 +442,7 @@ jobs:
           echo "Task branch prepared: ${task_branch}"
 
       - name: Run Codex Issue implementation
+        if: inputs.validation_mode != true
         env:
           CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
           CODEX_SANITIZER_EXIT_CODE_FILE: ${{ runner.temp }}/codex-sanitizer-exit-code.txt
@@ -680,6 +688,80 @@ jobs:
           chmod 600 -- "${CODEX_SANITIZER_EXIT_CODE_FILE}" "${CODEX_DURATION_FILE}"
           write_git_counts "${CODEX_GIT_AFTER_FILE}"
 
+      - name: Run CA-P10-018 minimal workspace-write validation
+        if: inputs.validation_mode == true
+        env:
+          VALIDATION_REPO: ${{ runner.temp }}/ca-p10-018-workspace
+          VALIDATION_BASE_HEAD_FILE: ${{ runner.temp }}/ca-p10-018-base-head.txt
+          VALIDATION_BASE_REFS_FILE: ${{ runner.temp }}/ca-p10-018-base-refs.sha256
+          VALIDATION_BASE_CONFIG_FILE: ${{ runner.temp }}/ca-p10-018-base-config.sha256
+          VALIDATION_EXIT_CODE_FILE: ${{ runner.temp }}/ca-p10-018-codex-exit-code.txt
+          VALIDATION_STDERR_FILE: ${{ runner.temp }}/ca-p10-018-codex-stderr.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" ]]; then
+            rm -f -- "${GOOGLE_GHA_CREDS_PATH}"
+          fi
+          [[ ! -e "${VALIDATION_REPO}" ]] || {
+            echo "Validation fixture path already exists" >&2
+            exit 1
+          }
+          install -d -m 700 -- "${VALIDATION_REPO}"
+          git -C "${VALIDATION_REPO}" init --initial-branch=ca-p10-018-fixture >/dev/null
+          git -C "${VALIDATION_REPO}" config user.name 'CA-P10-018 fixture'
+          git -C "${VALIDATION_REPO}" config user.email 'ca-p10-018@example.invalid'
+          printf '%s\n' 'CA-P10-018 workspace-write validation' > "${VALIDATION_REPO}/README.md"
+          git -C "${VALIDATION_REPO}" add README.md
+          git -C "${VALIDATION_REPO}" commit -m 'Initialize CA-P10-018 fixture' >/dev/null
+
+          [[ -z "$(git -C "${VALIDATION_REPO}" status --porcelain --untracked-files=all)" ]] || {
+            echo "Validation fixture is not clean before Codex execution" >&2
+            exit 1
+          }
+          [[ "$(git -C "${VALIDATION_REPO}" diff --cached --name-only)" == "" ]] || {
+            echo "Validation fixture has staged changes before Codex execution" >&2
+            exit 1
+          }
+          [[ "$(<"${VALIDATION_REPO}/README.md")" == 'CA-P10-018 workspace-write validation' ]] || {
+            echo "Validation fixture README baseline is invalid" >&2
+            exit 1
+          }
+          [[ -z "$(git -C "${VALIDATION_REPO}" remote)" ]] || {
+            echo "Validation fixture must not have a remote" >&2
+            exit 1
+          }
+          git -C "${VALIDATION_REPO}" rev-parse HEAD > "${VALIDATION_BASE_HEAD_FILE}"
+          git -C "${VALIDATION_REPO}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1 > "${VALIDATION_BASE_REFS_FILE}"
+          sha256sum "$(git -C "${VALIDATION_REPO}" rev-parse --git-path config)" | cut -d ' ' -f 1 > "${VALIDATION_BASE_CONFIG_FILE}"
+          chmod 600 -- "${VALIDATION_BASE_HEAD_FILE}" "${VALIDATION_BASE_REFS_FILE}" "${VALIDATION_BASE_CONFIG_FILE}"
+
+          : > "${VALIDATION_STDERR_FILE}"
+          chmod 600 -- "${VALIDATION_STDERR_FILE}"
+          set +e
+          printf '%s\n' \
+            'Append exactly this one line to README.md: CA-P10-018 workspace-write succeeded' \
+            'Do not modify any other file. Do not run git commands, create branches, commit, push, use the network, install packages, or run tests.' |
+            env \
+              -u GH_TOKEN \
+              -u GITHUB_TOKEN \
+              -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+              -u ACTIONS_ID_TOKEN_REQUEST_URL \
+              -u GOOGLE_GHA_CREDS_PATH \
+              -u GOOGLE_APPLICATION_CREDENTIALS \
+              -u CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE \
+              codex --ask-for-approval never exec \
+                --sandbox workspace-write \
+                --ephemeral \
+                --cd "${VALIDATION_REPO}" \
+                - 2> "${VALIDATION_STDERR_FILE}"
+          codex_exit_code="${PIPESTATUS[1]}"
+          set -e
+          printf '%s\n' "${codex_exit_code}" > "${VALIDATION_EXIT_CODE_FILE}"
+          chmod 600 -- "${VALIDATION_EXIT_CODE_FILE}"
+
       - name: Detect and validate changed authentication state
         id: auth_change
         env:
@@ -819,6 +901,7 @@ jobs:
 
       - name: Evaluate Codex implementation result
         if: >-
+          inputs.validation_mode != true &&
           always() &&
           steps.auth_change.outcome == 'success' &&
           (steps.auth_change.outputs.changed != 'true' || steps.persist_auth.outcome == 'success')
@@ -866,7 +949,7 @@ jobs:
           echo "Codex Issue implementation completed"
 
       - name: Report sanitized Codex diagnostics
-        if: always()
+        if: inputs.validation_mode != true && always()
         env:
           CODEX_EXIT_CODE_FILE: ${{ runner.temp }}/codex-exit-code.txt
           CODEX_SANITIZER_EXIT_CODE_FILE: ${{ runner.temp }}/codex-sanitizer-exit-code.txt
@@ -1021,7 +1104,84 @@ jobs:
             "${CODEX_DURATION_FILE}" \
             "${CODEX_CLI_VERSION_MATCH_FILE}"
 
+      - name: Evaluate CA-P10-018 workspace-write validation
+        if: >-
+          inputs.validation_mode == true &&
+          always() &&
+          steps.auth_change.outcome == 'success' &&
+          (steps.auth_change.outputs.changed != 'true' || steps.persist_auth.outcome == 'success')
+        env:
+          VALIDATION_REPO: ${{ runner.temp }}/ca-p10-018-workspace
+          VALIDATION_BASE_HEAD_FILE: ${{ runner.temp }}/ca-p10-018-base-head.txt
+          VALIDATION_BASE_REFS_FILE: ${{ runner.temp }}/ca-p10-018-base-refs.sha256
+          VALIDATION_BASE_CONFIG_FILE: ${{ runner.temp }}/ca-p10-018-base-config.sha256
+          VALIDATION_EXIT_CODE_FILE: ${{ runner.temp }}/ca-p10-018-codex-exit-code.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ -d "${VALIDATION_REPO}/.git" ]] || {
+            echo "VALIDATION_HARNESS_FAILURE: temporary repository is unavailable" >&2
+            exit 1
+          }
+          [[ -s "${VALIDATION_EXIT_CODE_FILE}" ]] || {
+            echo "VALIDATION_HARNESS_FAILURE: Codex exit status is unavailable" >&2
+            exit 1
+          }
+          codex_exit_code="$(<"${VALIDATION_EXIT_CODE_FILE}")"
+          [[ "${codex_exit_code}" =~ ^[0-9]+$ ]] || {
+            echo "VALIDATION_HARNESS_FAILURE: Codex exit status is invalid" >&2
+            exit 1
+          }
+          [[ "$(codex --version)" == 'codex-cli 0.148.0' ]] || {
+            echo "OTHER_INFRA_FAILURE: pinned Codex version is unavailable" >&2
+            exit 1
+          }
+          [[ "${codex_exit_code}" -eq 0 ]] || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: Codex exited nonzero" >&2
+            exit "${codex_exit_code}"
+          }
+          [[ "$(git -C "${VALIDATION_REPO}" diff --name-only --no-renames)" == 'README.md' ]] || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: files other than README.md changed" >&2
+            exit 1
+          }
+          git -C "${VALIDATION_REPO}" diff --check
+          cmp -s \
+            <(printf '%s\n%s\n' 'CA-P10-018 workspace-write validation' 'CA-P10-018 workspace-write succeeded') \
+            "${VALIDATION_REPO}/README.md" || {
+              echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: README content is not the required one-line append" >&2
+              exit 1
+            }
+          git -C "${VALIDATION_REPO}" diff --cached --quiet -- || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: Codex staged changes" >&2
+            exit 1
+          }
+          [[ "$(git -C "${VALIDATION_REPO}" rev-parse HEAD)" == "$(<"${VALIDATION_BASE_HEAD_FILE}")" ]] || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: Codex changed HEAD" >&2
+            exit 1
+          }
+          [[ "$(git -C "${VALIDATION_REPO}" symbolic-ref --short HEAD)" == 'ca-p10-018-fixture' ]] || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: Codex changed branch" >&2
+            exit 1
+          }
+          [[ -z "$(git -C "${VALIDATION_REPO}" remote)" ]] || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: Codex changed remote state" >&2
+            exit 1
+          }
+          [[ "$(git -C "${VALIDATION_REPO}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1)" == "$(<"${VALIDATION_BASE_REFS_FILE}")" ]] || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: Codex changed refs" >&2
+            exit 1
+          }
+          [[ "$(sha256sum "$(git -C "${VALIDATION_REPO}" rev-parse --git-path config)" | cut -d ' ' -f 1)" == "$(<"${VALIDATION_BASE_CONFIG_FILE}")" ]] || {
+            echo "MINIMAL_AUTHENTICATED_FILE_CHANGE_FAILURE: Codex changed repository-local Git configuration" >&2
+            exit 1
+          }
+          echo "git diff --stat:"
+          git -C "${VALIDATION_REPO}" diff --stat
+          echo "CA-P10-018 classification: MINIMAL_AUTHENTICATED_WORKSPACE_WRITE_SUCCESS"
+
       - name: Validate and stage implementation
+        if: inputs.validation_mode != true
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           BASE_SHA_FILE: ${{ runner.temp }}/codex-base-sha.txt
@@ -1185,6 +1345,7 @@ jobs:
           echo "Implementation changes passed publication validation"
 
       - name: Commit validated implementation
+        if: inputs.validation_mode != true
         id: implementation_commit
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -1236,6 +1397,7 @@ jobs:
           echo "Validated implementation committed"
 
       - name: Push validated task branch
+        if: inputs.validation_mode != true
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -1305,6 +1467,7 @@ jobs:
             "HEAD:refs/heads/${task_branch}"
 
       - name: Create Draft Pull Request
+        if: inputs.validation_mode != true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_PROMPT_DISABLED: "1"
@@ -1397,6 +1560,12 @@ jobs:
           PR_URL_FILE: ${{ runner.temp }}/codex-pr-url.txt
           GIT_ASKPASS_FILE: ${{ runner.temp }}/codex-git-askpass.sh
           EMPTY_HOOKS_DIR: ${{ runner.temp }}/codex-empty-hooks
+          VALIDATION_REPO: ${{ runner.temp }}/ca-p10-018-workspace
+          VALIDATION_BASE_HEAD_FILE: ${{ runner.temp }}/ca-p10-018-base-head.txt
+          VALIDATION_BASE_REFS_FILE: ${{ runner.temp }}/ca-p10-018-base-refs.sha256
+          VALIDATION_BASE_CONFIG_FILE: ${{ runner.temp }}/ca-p10-018-base-config.sha256
+          VALIDATION_EXIT_CODE_FILE: ${{ runner.temp }}/ca-p10-018-codex-exit-code.txt
+          VALIDATION_STDERR_FILE: ${{ runner.temp }}/ca-p10-018-codex-stderr.txt
         shell: bash
         run: |
           set -euo pipefail
@@ -1437,8 +1606,16 @@ jobs:
             "${PR_BODY_FILE}" \
             "${PR_URL_FILE}" \
             "${GIT_ASKPASS_FILE}" \
+            "${VALIDATION_BASE_HEAD_FILE}" \
+            "${VALIDATION_BASE_REFS_FILE}" \
+            "${VALIDATION_BASE_CONFIG_FILE}" \
+            "${VALIDATION_EXIT_CODE_FILE}" \
+            "${VALIDATION_STDERR_FILE}" \
             "${HOME}/.codex/auth.json" \
             "${HOME}/.codex/config.toml"
+          if [[ -d "${VALIDATION_REPO}" ]]; then
+            rm -rf -- "${VALIDATION_REPO}"
+          fi
           if [[ -d "${EMPTY_HOOKS_DIR}" ]]; then
             rmdir --ignore-fail-on-non-empty -- "${EMPTY_HOOKS_DIR}"
           fi
