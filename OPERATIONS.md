@@ -352,3 +352,42 @@ does not update, overwrite, delete, or suffix them.
 
 Retry, resume, recovery, detailed failure classification, and recovery of a
 pushed branch without a Pull Request belong to Phase 11.
+
+### Phase 10 workspace sandbox investigation stop
+
+Phase 10 workspace-write validation is currently blocked in the Linux sandbox
+path on the GitHub-hosted Ubuntu 24.04 runner.
+
+Bounded investigation reached its mandatory stop condition.
+
+Observed evidence:
+
+- Run `33145163464` used official `codex-cli 0.148.0` with
+  `--sandbox workspace-write`.
+- Authentication, WIF, and Secret retrieval succeeded.
+- The requested file change did not occur.
+- The runtime reported:
+  `bwrap: loopback: Failed RTM_NEWADDR`.
+- Hiding PATH-based system `bwrap` discovery did not make the file change
+  succeed.
+- Run `33150524450` attempted a standalone bundled-bwrap control/test probe.
+- The bundled resource was resolved successfully, but the probe stopped before
+  CONTROL/TEST execution because the fail-closed `bwrap --version` format
+  validation rejected the observed output.
+
+Therefore the remaining distinction is unresolved:
+
+- GitHub-hosted Ubuntu / bundled-bwrap namespace compatibility, or
+- Codex-specific bwrap invocation / sandbox construction.
+
+The bounded Phase 10 investigation budget is exhausted.
+
+Do not start another sandbox diagnostic experiment automatically.
+Further work requires an explicit design decision covering one of:
+
+- Codex CLI version strategy
+- runner / environment strategy
+- sandbox strategy
+
+Phase 10 remains `Next`.
+Phase 11 behavior is not entered by this stop condition.
