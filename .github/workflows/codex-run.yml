@@ -265,8 +265,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global @openai/codex@0.148.0
-          [[ "$(codex --version)" == "codex-cli 0.148.0" ]] || {
+          npm install --global @openai/codex@0.150.1
+          [[ "$(codex --version)" == "codex-cli 0.150.1" ]] || {
             echo "Installed Codex CLI version does not match the pinned version" >&2
             exit 1
           }
@@ -543,7 +543,7 @@ jobs:
           JSON
           chmod 600 -- "${CODEX_DIAGNOSTIC_SCHEMA_FILE}"
 
-          if [[ "$(codex --version 2>/dev/null || true)" == "codex-cli 0.148.0" ]]; then
+          if [[ "$(codex --version 2>/dev/null || true)" == "codex-cli 0.150.1" ]]; then
             printf 'true\n' > "${CODEX_CLI_VERSION_MATCH_FILE}"
           else
             printf 'false\n' > "${CODEX_CLI_VERSION_MATCH_FILE}"
@@ -1133,7 +1133,7 @@ jobs:
             echo "VALIDATION_HARNESS_FAILURE: Codex exit status is invalid" >&2
             exit 1
           }
-          [[ "$(codex --version)" == 'codex-cli 0.148.0' ]] || {
+          [[ "$(codex --version)" == 'codex-cli 0.150.1' ]] || {
             echo "OTHER_INFRA_FAILURE: pinned Codex version is unavailable" >&2
             exit 1
           }
