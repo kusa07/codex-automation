@@ -94,6 +94,39 @@ If the requested task is a bounded migration, test, validation, or cleanup step,
 
 Do not perform unrelated refactoring or documentation changes unless they are required for correctness or explicitly requested.
 
+## Investigation expansion guardrail
+
+When debugging or root-cause investigation begins to expand beyond the planned
+implementation work, use a bounded investigation cycle by default:
+
+1. perform one read-only cause-classification step
+2. perform one targeted experiment based on that classification
+3. if necessary, perform at most one additional targeted experiment
+4. if the problem is still unresolved, stop before continuing the investigation
+
+At that stop point, do not automatically add more diagnostic tasks, broaden the
+investigation, redesign the architecture, replace major tooling, change the
+runtime strategy, or continue creating additional experiment IDs.
+
+Instead, report the situation to the user and explicitly include:
+
+- what is currently known
+- what has been ruled out
+- what the bounded experiments showed
+- what remains uncertain
+- the likely next options and their tradeoffs
+- how much further work each option may add to the current phase
+
+Then wait for explicit user direction before proceeding.
+
+For the current Phase 10 workspace-sandbox investigation, the binding sequence
+is: cause classification, one targeted experiment, at most one additional
+targeted experiment, then a mandatory user checkpoint if the issue remains
+unresolved.
+
+A different investigation limit may be used only when the user explicitly
+approves it for the task.
+
 ## Required design context
 
 Use the following documents according to the task:
