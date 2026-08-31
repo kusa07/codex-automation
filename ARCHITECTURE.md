@@ -19,7 +19,17 @@ Google Cloud
 
 The shared layer must prevent individual projects from needing to understand or duplicate the internal authentication and Codex execution mechanism.
 
+This document describes the current architecture of `codex-automation`, including architecture that has been implemented and validated and architecture that has been designed but is not yet complete.
+
+`ROADMAP.md` remains authoritative for phase numbering, completion state, and implementation order.
+
+Future or pending architecture must be explicitly distinguished from the validated current architecture.
+
 ## 2. High-level architecture
+
+### 2.1 Current validated path
+
+The validated execution path through Phase 9 is:
 
 ```text
 User
@@ -35,7 +45,8 @@ Caller Workflow
   v
 codex-automation Reusable Workflow
   |
-  +--> GitHub-hosted runner
+  v
+GitHub Actions
   |
   +--> GitHub OIDC
   |       |
@@ -47,16 +58,28 @@ codex-automation Reusable Workflow
   |       +--> Secret Manager
   |
   +--> Codex CLI
-  |
-  v
-Project branch
-  |
-  v
-Pull Request
-  |
-  v
-Human / ChatGPT review
+          |
+          v
+     read-only task execution
 ```
+
+### 2.2 Phase 10 target path
+
+The intended Phase 10 publication boundary is:
+
+```text
+validated task
+    ↓
+Codex implementation
+    ↓
+validated working-tree changes
+    ↓
+trusted workflow publication
+    ↓
+Draft Pull Request
+```
+
+This target path is not yet validated end to end and must not be interpreted as completed architecture.
 
 ## 3. Components
 
@@ -122,9 +145,11 @@ It must not contain application-specific architecture.
 
 GitHub Actions provides the automation execution environment.
 
-Only GitHub-hosted runners are used.
+The validated execution path through Phase 9 uses GitHub-hosted runners.
 
-Self-hosted runners are explicitly outside the initial architecture.
+Phase 10 write-capable Codex execution exposed a Linux sandbox compatibility problem on the GitHub-hosted environment.
+
+The runner strategy for write-capable execution is therefore under explicit architectural reconsideration. A self-hosted runner is a candidate but is not yet part of the validated architecture.
 
 ### 3.6 Google Cloud
 
@@ -223,13 +248,15 @@ Issue C
 
 Separate caller repositories may have separate serialized streams and separate `auth.json` secrets.
 
-Runs within one caller repository form a queue and are processed one at a time. A new run must not simply replace or cancel a Codex job already in progress. The implementation is expected to use GitHub Actions concurrency / queue behavior, with `cancel-in-progress`-equivalent behavior disabled by default for the Codex execution stream. The exact YAML syntax will be decided during implementation.
+Runs within one caller repository form a queue and are processed one at a time. A new run must not simply replace or cancel a Codex job already in progress. The implementation uses GitHub Actions concurrency / queue behavior with cancellation disabled for the Codex execution stream.
+
+This behavior was validated in Phase 7.
 
 This prevents multiple jobs from mutating or refreshing the same authentication state simultaneously, and avoids interrupting authentication or branch updates in a way that could leave inconsistent state.
 
 ## 7. Reusable workflow architecture
 
-The final implementation is expected to expose a reusable GitHub Actions workflow from `codex-automation`.
+`codex-automation` exposes a reusable GitHub Actions workflow for caller repositories.
 
 Caller repositories should invoke that workflow through a versioned, controlled reference. The default policy is to pin the reusable workflow to an immutable commit SHA rather than follow a branch implicitly. When `codex-automation` changes, each caller deliberately updates its pinned SHA so that breaking changes are not adopted automatically. A release or tag-based process may be introduced later.
 
@@ -267,7 +294,9 @@ The most important architectural rule is:
 
 > Application repositories should know how to request Codex execution, but should not need to know how Codex authentication and execution infrastructure works.
 
-## 10. Phase 9 Issue task path
+## 10. Phase 9 validated Issue task path
+
+This is the current validated end-to-end Codex execution boundary.
 
 The Phase 9 read-only execution path is:
 
@@ -290,6 +319,12 @@ Issue title and body are untrusted task input. They cannot change workflow permi
 Phase 9 ends at read-only task analysis. Repository writes, branches, commits, pushes, and Pull Requests remain Phase 10 responsibilities.
 
 ## 11. Phase 10 implementation and publication path
+
+Status: designed and partially implemented, not yet validated as a complete path.
+
+The trusted publication architecture described below remains the intended Phase 10 responsibility boundary.
+
+However, write-capable Codex execution is currently blocked before successful working-tree implementation on the GitHub-hosted Ubuntu runner.
 
 The Phase 10 path is:
 
@@ -317,24 +352,80 @@ Draft Pull Request
 human review
 ```
 
-Codex receives a workspace-write sandbox but owns only working-tree
-implementation. It does not create or switch branches, stage files, commit,
-push, create Pull Requests, or modify GitHub state. Those operations remain
-trusted workflow responsibilities.
+Codex receives a workspace-write sandbox but owns only working-tree implementation. It does not create or switch branches, stage files, commit, push, create Pull Requests, or modify GitHub state. Those operations remain trusted workflow responsibilities.
 
-The caller repository's default branch is obtained from current GitHub
-repository metadata and validated before checkout. The local checkout commit
-must match the current remote default-branch commit before the task branch is
-created.
+The caller repository's default branch is obtained from current GitHub repository metadata and validated before checkout. The local checkout commit must match the current remote default-branch commit before the task branch is created.
 
-GitHub write credentials are isolated from Codex. Checkout credentials are not
-persisted, Google credential files are removed before Codex, and GitHub and
-OIDC credentials are removed from the Codex subprocess environment. GitHub
-tokens are scoped only to metadata and publication steps.
+GitHub write credentials are isolated from Codex. Checkout credentials are not persisted, Google credential files are removed before Codex, and GitHub and OIDC credentials are removed from the Codex subprocess environment. GitHub tokens are scoped only to metadata and publication steps.
 
-Publication is permitted only after authentication persistence succeeds,
-Codex exits successfully, repository administrative state remains valid, and
-the implementation passes the protected-path and staged-diff gate.
+Publication is permitted only after authentication persistence succeeds, Codex exits successfully, repository administrative state remains valid, and the implementation passes the protected-path and staged-diff gate.
 
-The resulting Pull Request is always created as a Draft. It is a review
-boundary, not approval or merge authorization.
+The resulting Pull Request is always created as a Draft. It is a review boundary, not approval or merge authorization.
+
+Phase 10 must not be considered complete merely because branch, publication, or diagnostic workflow code exists.
+
+Implemented, validated, and phase-complete are separate states.
+
+## 12. Current implementation status
+
+| Capability | State |
+|---|---|
+| Core responsibility boundaries | Validated |
+| GitHub OIDC → Google Cloud WIF | Validated |
+| Caller-specific Secret isolation | Validated |
+| `auth.json` restore | Validated |
+| Codex ChatGPT authentication | Validated |
+| Read-only Codex execution | Validated |
+| Repository serialization | Validated |
+| Safe auth persistence | Validated |
+| Issue → `codex-ready` validation | Validated |
+| Write-capable Codex execution | Blocked |
+| Branch / commit / push publication | Partially implemented, not end-to-end validated |
+| Draft PR publication | Partially implemented, not end-to-end validated |
+| Failure classification | Planned |
+| Multi-repository rollout | Planned |
+
+The terms implemented, validated, and complete are intentionally distinct.
+
+`ROADMAP.md` remains authoritative for phase completion state.
+
+## 13. Current known limitation
+
+Write-capable Codex execution using the GitHub-hosted Ubuntu runner has not successfully completed.
+
+The bounded Phase 10 investigation identified a sandbox / namespace issue involving the Codex workspace-write path and `bwrap`.
+
+The investigation was intentionally stopped before expanding into further experiments.
+
+A new explicit runner, sandbox, or Codex CLI strategy decision is required before continuing Phase 10.
+
+Detailed diagnostic evidence and operational stop conditions belong in `OPERATIONS.md`; this document records only the architectural impact.
+
+## 14. Pending runner architecture decision
+
+A self-hosted execution path is being considered for Phase 10.
+
+Candidate flow:
+
+```text
+GitHub task request
+        ↓
+runner availability pre-check
+        ↓
+   ┌────┴────┐
+ online     offline
+   ↓           ↓
+execute     NOT_EXECUTED
+   ↓       RUNNER_OFFLINE
+self-hosted runner
+   ↓
+Codex
+```
+
+The candidate design follows these principles:
+
+- runner offline state is not a Codex execution failure
+- an offline runner should not cause a write-capable execution job to be queued unnecessarily
+- runner availability checking and Codex execution should remain separate responsibilities
+- existing WIF, Secret Manager, input validation, serialization, and publication security boundaries should be preserved where practical
+- the self-hosted execution path does not become part of the validated current architecture until it has been explicitly approved, implemented, and validated
