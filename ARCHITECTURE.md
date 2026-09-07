@@ -79,6 +79,8 @@ trusted workflow publication
 Draft Pull Request
 ```
 
+For write-capable execution, the approved Phase 10 architecture uses the Self-hosted Execution path defined in `SELF_HOSTED_EXECUTION.md`.
+
 This target path is not yet validated end to end and must not be interpreted as completed architecture.
 
 ## 3. Components
@@ -134,6 +136,7 @@ The shared repository owns:
 - authentication restore and persistence lifecycle
 - Codex setup and execution
 - execution serialization
+- Self-hosted Execution lifecycle and policy
 - validation
 - security controls
 - error handling
@@ -141,15 +144,25 @@ The shared repository owns:
 
 It must not contain application-specific architecture.
 
-### 3.5 GitHub Actions
+### 3.5 GitHub Actions and execution environments
 
-GitHub Actions provides the automation execution environment.
+GitHub Actions provides the automation orchestration and dispatch environment.
 
 The validated execution path through Phase 9 uses GitHub-hosted runners.
 
-Phase 10 write-capable Codex execution exposed a Linux sandbox compatibility problem on the GitHub-hosted environment.
+Phase 10 write-capable Codex execution exposed a Linux sandbox compatibility problem on the GitHub-hosted Ubuntu environment.
 
-The runner strategy for write-capable execution is therefore under explicit architectural reconsideration. A self-hosted runner is a candidate but is not yet part of the validated architecture.
+The approved Phase 10 replacement architecture uses Self-hosted Execution for write-capable execution. In that architecture:
+
+- GitHub Actions remains the orchestration mechanism
+- the GitHub Actions self-hosted runner is the dispatch mechanism to the local machine
+- the Self-hosted Execution Area is the automation-managed local execution environment
+- Local Codex is the initial Executor
+- `codex-automation` owns the execution policy and Self-hosted Execution lifecycle
+
+The Self-hosted Execution architecture is approved but not yet implemented and validated as the Phase 10 execution path.
+
+Detailed requirements are defined in `SELF_HOSTED_EXECUTION.md`.
 
 ### 3.6 Google Cloud
 
@@ -168,6 +181,8 @@ Its responsibilities include:
 Codex CLI performs implementation work inside the caller repository checkout.
 
 The intended authentication model uses ChatGPT authentication rather than a separately billed OpenAI API key.
+
+Under Self-hosted Execution, Local Codex remains the implementation Executor. It does not become responsible for runner management, credential lifecycle, local execution-area lifecycle, or trusted GitHub publication.
 
 ## 4. Authentication architecture
 
@@ -213,8 +228,10 @@ Before Codex execution:
 
 1. Authenticate GitHub Actions to Google Cloud through OIDC / WIF.
 2. Retrieve the caller repository's `auth.json`.
-3. Store it only in the ephemeral runner environment.
+3. Store it only in the approved execution environment and only for the duration required by the execution lifecycle.
 4. Calculate or otherwise record whether the file changes during execution.
+
+For Self-hosted Execution, temporary credential material must remain inside the automation-managed credential/runtime locations defined by `SELF_HOSTED_EXECUTION.md`; the persistent host does not make local credential state authoritative.
 
 After Codex execution:
 
@@ -252,6 +269,8 @@ Runs within one caller repository form a queue and are processed one at a time. 
 
 This behavior was validated in Phase 7.
 
+Self-hosted execution adds a second, host-local serialization boundary. The initial design permits only one active job per Self-hosted Execution Area. GitHub Actions concurrency and the local execution lock serve different purposes and are both required by the approved design.
+
 This prevents multiple jobs from mutating or refreshing the same authentication state simultaneously, and avoids interrupting authentication or branch updates in a way that could leave inconsistent state.
 
 ## 7. Reusable workflow architecture
@@ -272,6 +291,7 @@ The caller must not duplicate:
 - Secret Manager restore logic
 - auth persistence logic
 - Codex installation internals
+- Self-hosted Execution lifecycle logic
 - common validation
 - shared security behavior
 
@@ -324,12 +344,14 @@ Status: designed and partially implemented, not yet validated as a complete path
 
 The trusted publication architecture described below remains the intended Phase 10 responsibility boundary.
 
-However, write-capable Codex execution is currently blocked before successful working-tree implementation on the GitHub-hosted Ubuntu runner.
+The GitHub-hosted Ubuntu workspace-write path remains blocked by the previously observed sandbox compatibility problem. The approved Phase 10 execution strategy is now to continue through Self-hosted Execution rather than resume the bounded GitHub-hosted sandbox investigation automatically.
 
 The Phase 10 path is:
 
 ```text
 validated codex-ready Issue
+    ↓
+Self-hosted Execution preflight / dispatch
     ↓
 trusted caller default-branch metadata
     ↓
@@ -337,7 +359,7 @@ validated base commit
     ↓
 workflow-created task branch
     ↓
-Codex working-tree implementation
+Local Codex working-tree implementation
     ↓
 authentication persistence lifecycle
     ↓
@@ -352,7 +374,7 @@ Draft Pull Request
 human review
 ```
 
-Codex receives a workspace-write sandbox but owns only working-tree implementation. It does not create or switch branches, stage files, commit, push, create Pull Requests, or modify GitHub state. Those operations remain trusted workflow responsibilities.
+Codex owns only working-tree implementation. It does not create or switch branches, stage files, commit, push, create Pull Requests, or modify GitHub state. Those operations remain trusted automation responsibilities.
 
 The caller repository's default branch is obtained from current GitHub repository metadata and validated before checkout. The local checkout commit must match the current remote default-branch commit before the task branch is created.
 
@@ -362,7 +384,7 @@ Publication is permitted only after authentication persistence succeeds, Codex e
 
 The resulting Pull Request is always created as a Draft. It is a review boundary, not approval or merge authorization.
 
-Phase 10 must not be considered complete merely because branch, publication, or diagnostic workflow code exists.
+Phase 10 must not be considered complete merely because Self-hosted Execution, branch, publication, or diagnostic workflow code exists.
 
 Implemented, validated, and phase-complete are separate states.
 
@@ -379,7 +401,9 @@ Implemented, validated, and phase-complete are separate states.
 | Repository serialization | Validated |
 | Safe auth persistence | Validated |
 | Issue → `codex-ready` validation | Validated |
-| Write-capable Codex execution | Blocked |
+| Self-hosted Execution architecture | Approved, not yet implemented |
+| Self-hosted Execution path | Not yet validated |
+| Write-capable Codex execution | Blocked on GitHub-hosted path; self-hosted replacement not yet validated |
 | Branch / commit / push publication | Partially implemented, not end-to-end validated |
 | Draft PR publication | Partially implemented, not end-to-end validated |
 | Failure classification | Planned |
@@ -395,17 +419,17 @@ Write-capable Codex execution using the GitHub-hosted Ubuntu runner has not succ
 
 The bounded Phase 10 investigation identified a sandbox / namespace issue involving the Codex workspace-write path and `bwrap`.
 
-The investigation was intentionally stopped before expanding into further experiments.
+The investigation was intentionally stopped before expanding into further experiments and remains closed unless the user explicitly reopens it.
 
-A new explicit runner, sandbox, or Codex CLI strategy decision is required before continuing Phase 10.
+The runner strategy decision has now been made: Phase 10 will proceed through the approved Self-hosted Execution architecture.
+
+This resolves the architecture decision point but does not mean the self-hosted path has been implemented or validated.
 
 Detailed diagnostic evidence and operational stop conditions belong in `OPERATIONS.md`; this document records only the architectural impact.
 
-## 14. Pending runner architecture decision
+## 14. Approved Phase 10 Self-hosted Execution architecture
 
-A self-hosted execution path is being considered for Phase 10.
-
-Candidate flow:
+The approved Phase 10 write-capable execution flow is:
 
 ```text
 GitHub task request
@@ -413,19 +437,32 @@ GitHub task request
 runner availability pre-check
         ↓
    ┌────┴────┐
- online     offline
+available   unavailable
    ↓           ↓
 execute     NOT_EXECUTED
-   ↓       RUNNER_OFFLINE
-self-hosted runner
    ↓
-Codex
+GitHub Actions self-hosted runner
+   ↓
+Self-hosted Execution Area
+   ↓
+Local Codex
 ```
 
-The candidate design follows these principles:
+The approved design follows these principles:
 
-- runner offline state is not a Codex execution failure
-- an offline runner should not cause a write-capable execution job to be queued unnecessarily
-- runner availability checking and Codex execution should remain separate responsibilities
-- existing WIF, Secret Manager, input validation, serialization, and publication security boundaries should be preserved where practical
-- the self-hosted execution path does not become part of the validated current architecture until it has been explicitly approved, implemented, and validated
+- Self-hosted Execution is a `codex-automation` capability
+- the physical execution area exists outside Git repositories
+- `codex-automation` owns the execution area's expected state and lifecycle
+- the GitHub Actions self-hosted runner is the dispatch mechanism, not the Executor
+- Local Codex is the initial Executor
+- runner unavailability is not a Codex implementation failure
+- availability checking and execution remain separate responsibilities
+- availability checking is advisory and does not reserve the runner
+- the initial Self-hosted Execution Area permits only one active job at a time
+- GitHub Actions concurrency and a local execution lock are both required
+- existing WIF, Secret Manager, input validation, authentication serialization, and trusted publication boundaries remain in force
+- persistent-host residual state must be checked before and after execution
+- ambiguous or inconsistent local state fails closed
+- the self-hosted path does not become validated architecture until it has been implemented and successfully tested
+
+Detailed directory ownership, marker/state handling, local locking, credential isolation, threat model, cleanup, audit behavior, migration policy, and incremental Phase 10 validation are defined in `SELF_HOSTED_EXECUTION.md`.
