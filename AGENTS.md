@@ -119,10 +119,9 @@ Instead, report the situation to the user and explicitly include:
 
 Then wait for explicit user direction before proceeding.
 
-For the current Phase 10 workspace-sandbox investigation, the binding sequence
-is: cause classification, one targeted experiment, at most one additional
-targeted experiment, then a mandatory user checkpoint if the issue remains
-unresolved.
+The previous Phase 10 GitHub-hosted workspace-write / bwrap investigation is closed. Do not resume it automatically.
+
+Phase 10 implementation should now follow the approved Self-hosted Execution architecture in `SELF_HOSTED_EXECUTION.md` unless the user explicitly reopens the hosted-runner investigation or approves another architecture change.
 
 A different investigation limit may be used only when the user explicitly
 approves it for the task.
@@ -136,6 +135,9 @@ Use the following documents according to the task:
 
 - `ARCHITECTURE.md`
   - component responsibilities and system structure
+
+- `SELF_HOSTED_EXECUTION.md`
+  - Phase 10 Self-hosted Execution architecture, local execution area, local locking, runtime isolation, cleanup, recovery, migration, and threat model
 
 - `GOOGLE_CLOUD.md`
   - WIF, OIDC, Secret Manager, IAM, and Google Cloud configuration
@@ -154,11 +156,14 @@ Use the following documents according to the task:
 
 Read all documents materially relevant to the change before implementation.
 
+For any task that creates, modifies, validates, or operates Self-hosted Execution, `SELF_HOSTED_EXECUTION.md`, `SECURITY.md`, and `OPERATIONS.md` are mandatory reading.
+
 ## Security invariants
 
 The following rules must remain true unless the architecture is explicitly redesigned and approved:
 
-- use GitHub-hosted runners
+- use only execution environments explicitly approved by the architecture
+- the validated Phase 9 hosted path remains GitHub-hosted; Phase 10 write-capable execution follows `SELF_HOSTED_EXECUTION.md`
 - use GitHub OIDC and Google Cloud Workload Identity Federation
 - do not introduce long-lived downloaded Google service account keys
 - do not commit `auth.json`
@@ -166,19 +171,26 @@ The following rules must remain true unless the architecture is explicitly redes
 - keep caller authentication secrets isolated by repository
 - use immutable GitHub identity attributes where defined
 - keep reusable workflow references pinned to approved immutable commit SHAs
-- apply least privilege to GitHub and Google Cloud permissions
+- apply least privilege to GitHub, Google Cloud, and local Self-hosted Execution permissions
 - do not allow concurrent Codex jobs to use the same serialized authentication state
+- for the initial Self-hosted design, do not allow more than one active job in the same managed execution area
+- preserve the local execution lock, preflight, residual-state validation, credential-location, and cleanup boundaries defined in `SELF_HOSTED_EXECUTION.md`
+- do not use the user's normal development working copy or normal Codex runtime as the Self-hosted automation environment by default
+- do not silently repair unknown, unsupported, or security-relevant ambiguous Self-hosted state during a normal task run
 - preserve a known-good authentication state when candidate authentication validation fails
+- do not resume interrupted Local Codex work automatically unless a later approved design explicitly permits it
 
 ## Caller boundary
 
 Application repositories define what should be built.
 
-`codex-automation` defines how Codex is executed safely and consistently.
+`codex-automation` defines how Codex is executed safely and consistently, including the approved Self-hosted Execution lifecycle.
 
 Do not introduce application-specific product architecture or application-specific decisions into this repository.
 
 Caller-specific behavior should remain in the caller repository unless it is genuinely part of the shared automation contract.
+
+GitHub runner eligibility or binding required in caller context does not transfer ownership of Self-hosted Execution policy, credential lifecycle, local locking, cleanup, or publication behavior into the caller repository.
 
 ## Change safety
 
@@ -201,6 +213,8 @@ After making a change:
 Do not hide unexpected repository state by automatically resetting, cleaning, rebasing, or force-pushing.
 
 If unexpected state affects safety, stop and report it.
+
+For Self-hosted Execution state, do not delete, repurpose, migrate, or overwrite an unknown existing execution area merely to make a task proceed. Follow the explicit fail-closed and migration rules in `SELF_HOSTED_EXECUTION.md`.
 
 ## Phase transitions
 
