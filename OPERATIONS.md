@@ -50,6 +50,48 @@ create/update Pull Request
 report result
 ```
 
+For Phase 10 Self-hosted Execution, the approved operational path inserts a persistent-host preflight and local serialization boundary before local Codex execution:
+
+```text
+validated Issue
+    ↓
+runner availability pre-check
+    ↓
+self-hosted job dispatch
+    ↓
+managed execution-area validation
+    ↓
+schema validation
+    ↓
+local execution lock
+    ↓
+residual-state preflight
+    ↓
+execution ID / current-run state
+    ↓
+workspace preparation
+    ↓
+OIDC / WIF / Secret restore
+    ↓
+isolated Local Codex runtime
+    ↓
+Local Codex execution
+    ↓
+authentication persistence lifecycle
+    ↓
+trusted publication
+    ↓
+cleanup
+    ↓
+post-run residual-state validation
+    ↓
+execution state completion
+    ↓
+local lock release
+```
+
+The detailed Self-hosted Execution architecture is defined in `SELF_HOSTED_EXECUTION.md`.
+
 ## 3. Serialization
 
 Each caller repository has a serialized Codex execution stream.
@@ -58,7 +100,23 @@ If multiple Issues become ready at approximately the same time, they form a repo
 
 A new run must not simply replace or cancel the Codex job already in progress. The implementation is expected to use GitHub Actions concurrency / queue behavior and to avoid `cancel-in-progress`-equivalent behavior for the Codex execution stream by default. Interrupting a job while it is updating authentication state or a branch may create inconsistent state.
 
-The exact execution order, queue behavior, and YAML syntax will be defined precisely during workflow implementation.
+Self-hosted execution adds a second serialization layer. The initial Phase 10 design allows only one active job in a Self-hosted Execution Area at a time.
+
+Therefore:
+
+```text
+GitHub Actions concurrency
+    = caller / auth-stream serialization
+
+local execution lock
+    = persistent execution-area serialization
+```
+
+Both controls are required. Neither replaces the other.
+
+The initial local lock implementation should use a Windows named Mutex. If the Mutex is detected as abandoned, the execution must treat that as evidence of a possibly interrupted prior run rather than as a normal release. The job must continue into residual-state inspection and fail closed if the state is ambiguous or unsafe.
+
+A lock-file implementation should not be substituted without an explicit staleness-detection design.
 
 ## Repository serialization validation
 
@@ -101,7 +159,9 @@ and that a later run waits instead of cancelling an in-progress run.
 Strict FIFO ordering among multiple pending runs is not part of this validation.
 
 Different caller repositories use different repository-scoped concurrency
-groups and therefore remain independently serializable.
+groups and therefore remain independently serializable at the GitHub Actions layer.
+
+The Self-hosted Execution Area remains globally serialized to one local job at a time in the initial design even when different caller repositories are independently queueable in GitHub Actions.
 
 ### Safety
 
@@ -120,13 +180,17 @@ that the expected serialization behavior was actually observed.
 A successful infrastructure execution means:
 
 - caller identity was validated
+- the approved execution environment passed preflight
 - authentication was restored
 - Codex completed its requested execution phase
 - updated authentication state, if any, was safely persisted
 - expected GitHub result was published
+- required cleanup and residual-state validation succeeded
 - no secret data was exposed
 
 A successful Codex process does not automatically mean that the resulting code should be merged.
+
+For Self-hosted Execution, a successful Codex process is not sufficient to report full success if required security cleanup or final residual-state validation fails.
 
 ## Authentication persistence lifecycle
 
@@ -170,6 +234,7 @@ If Codex fails:
 - determine whether `auth.json` changed
 - treat any changed `auth.json` as a candidate rather than adopting it unconditionally
 - validate a stored candidate before using it as the next authoritative authentication state
+- complete required Self-hosted cleanup where practical
 - report the failure to the caller
 - do not falsely mark the implementation as successful
 
@@ -252,13 +317,20 @@ That file can then be securely reseeded into the appropriate Secret Manager secr
 
 The exact trusted-machine and upload procedure will be specified later.
 
-## 13. Observability
+## 13. Observability and audit events
 
 The system should make failures classifiable.
 
 Suggested categories:
 
 - CALLER_VALIDATION_FAILED
+- RUNNER_OFFLINE
+- RUNNER_BUSY
+- RUNNER_INELIGIBLE
+- SELF_HOSTED_PREFLIGHT_FAILED
+- SELF_HOSTED_LOCK_ABANDONED
+- SELF_HOSTED_STATE_INVALID
+- SELF_HOSTED_CLEANUP_FAILED
 - OIDC_AUTH_FAILED
 - SECRET_READ_FAILED
 - CODEX_AUTH_FAILED
@@ -268,7 +340,23 @@ Suggested categories:
 - GITHUB_PUBLISH_FAILED
 - UNKNOWN_INFRASTRUCTURE_FAILURE
 
-These names are provisional and may change during implementation.
+These names remain provisional until Phase 11 formalizes the result contract.
+
+For Self-hosted Execution, security-relevant lifecycle events should be emitted in sanitized form to GitHub Actions logs. Initial event names may include:
+
+- `EXECUTION_STARTED`
+- `PREFLIGHT_PASSED`
+- `CREDENTIAL_RESTORED`
+- `CODEX_STARTED`
+- `CODEX_FINISHED`
+- `CREDENTIAL_REMOVED`
+- `CLEANUP_PASSED`
+- `ABANDONED_LOCK_DETECTED`
+- `FAIL_CLOSED`
+
+Local execution-area logs are supplementary diagnostics. They are not the only audit trail for security-relevant lifecycle events.
+
+Audit output must not include credential payloads, tokens, secret contents, or sensitive comparison hashes.
 
 ## 14. Operational principle
 
@@ -310,10 +398,20 @@ Branch creation, source modification, commits, pushes, and Pull Request publicat
 
 ## 16. Phase 10 implementation publication
 
-The Phase 10 normal lifecycle is:
+The approved Phase 10 Self-hosted lifecycle is:
 
 ```text
 validated Issue
+    ↓
+runner availability pre-check
+    ↓
+self-hosted dispatch
+    ↓
+managed-area / schema preflight
+    ↓
+local execution lock
+    ↓
+execution state / workspace preparation
     ↓
 resolve trusted default branch
     ↓
@@ -323,7 +421,7 @@ reject branch or Pull Request collision
     ↓
 create deterministic task branch
     ↓
-run Codex with workspace-write
+run Local Codex with controlled working-tree write access
     ↓
 complete authentication persistence
     ↓
@@ -336,27 +434,105 @@ create one implementation commit
 push only the task branch
     ↓
 create Draft Pull Request
+    ↓
+cleanup / residual-state validation
 ```
 
-Codex failure, authentication failure, or publication-validation failure
-causes commit, push, and Pull Request creation to be skipped.
+Codex failure, authentication failure, Self-hosted preflight failure, cleanup failure, or publication-validation failure prevents a full-success result. Commit, push, and Pull Request creation must be skipped whenever their prerequisites are not satisfied.
 
 If push fails, no force push or automatic retry is performed.
 
-If the task branch push succeeds but Draft Pull Request creation fails, the
-remote branch and implementation commit are retained. The workflow does not
-delete the branch or retry Pull Request creation automatically.
+If the task branch push succeeds but Draft Pull Request creation fails, the remote branch and implementation commit are retained. The workflow does not delete the branch or retry Pull Request creation automatically.
 
-Existing generated branches or Pull Requests are collision states. Phase 10
-does not update, overwrite, delete, or suffix them.
+Existing generated branches or Pull Requests are collision states. Phase 10 does not update, overwrite, delete, or suffix them.
 
-Retry, resume, recovery, detailed failure classification, and recovery of a
-pushed branch without a Pull Request belong to Phase 11.
+Retry, resume, recovery, detailed failure classification, and recovery of a pushed branch without a Pull Request belong to Phase 11 unless explicitly brought into Phase 10 by approved design change.
+
+### Self-hosted execution identity and atomic state
+
+Each Self-hosted run must have an execution identity that is unique to the GitHub execution context. The initial design may derive it from values such as:
+
+```text
+repository_id + github_run_id + github_run_attempt
+```
+
+The execution ID is used to detect duplicate or conflicting local execution state.
+
+The managed-area identity marker and mutable execution-state files such as `current-run.json` must be written atomically. The implementation should use a write-to-temporary-file, flush/close, then atomic rename/replace pattern.
+
+Unreadable state, parse failure, missing required fields, unsupported schema, or internally inconsistent state must fail closed rather than be guessed or silently repaired.
+
+### Interrupted Self-hosted execution
+
+The initial Phase 10 design does not automatically resume or automatically rerun an interrupted Local Codex execution.
+
+Possible interruption causes include:
+
+- host shutdown or restart
+- runner service termination
+- process crash
+- power loss
+- network loss
+- workflow cancellation
+
+Post-job cleanup may not run in these cases. The next job must therefore perform preflight and inspect the managed locations and execution state before restoring credentials or starting Codex.
+
+Security-relevant residue or ambiguous state must fail closed and require explicit recovery. Normal execution must not perform destructive automatic recovery.
+
+### Credential-location policy
+
+Self-hosted credential handling is verified against known automation-managed locations rather than attempting to scan the entire host for possible copies.
+
+The implementation must restrict where it writes:
+
+- Codex authentication files
+- Google credential files
+- temporary GitHub credential helpers
+- other sensitive per-run material
+
+Cleanup removes these known temporary files and verifies that the expected managed locations no longer contain active credential material.
+
+The design does not claim forensic secure deletion from SSD or other storage media.
+
+### Execution-area schema migration
+
+Normal execution must not automatically migrate an older or unsupported Self-hosted Execution Area schema.
+
+Conceptually:
+
+```text
+expected schema == local schema
+    -> continue
+
+expected schema != local schema
+    -> STOP
+       require explicit setup / migration action
+```
+
+Unknown or malformed managed-area state must not be converted automatically during a normal task run.
+
+### Phase 10 Self-hosted validation sequence
+
+The Self-hosted Execution path should be validated incrementally:
+
+1. approve Self-hosted Execution architecture
+2. create and validate the managed execution area
+3. validate ensure / preflight behavior
+4. register and validate the self-hosted runner
+5. run an inert job without Codex credentials
+6. validate workspace creation and cleanup
+7. validate WIF / Secret Manager access from the self-hosted path
+8. validate isolated Codex authentication restore and cleanup
+9. run one Codex read-only task
+10. run one minimal controlled workspace-write task
+11. reconnect the existing trusted publication path
+12. validate Issue → Codex → Draft Pull Request end to end
+
+Phase 10 remains `Next` until the existing `ROADMAP.md` completion criteria are satisfied.
 
 ### Phase 10 workspace sandbox investigation stop
 
-Phase 10 workspace-write validation is currently blocked in the Linux sandbox
-path on the GitHub-hosted Ubuntu 24.04 runner.
+Phase 10 workspace-write validation was blocked in the Linux sandbox path on the GitHub-hosted Ubuntu 24.04 runner.
 
 Bounded investigation reached its mandatory stop condition.
 
@@ -375,19 +551,16 @@ Observed evidence:
   CONTROL/TEST execution because the fail-closed `bwrap --version` format
   validation rejected the observed output.
 
-Therefore the remaining distinction is unresolved:
+Therefore the remaining distinction was unresolved:
 
 - GitHub-hosted Ubuntu / bundled-bwrap namespace compatibility, or
 - Codex-specific bwrap invocation / sandbox construction.
 
-The bounded Phase 10 investigation budget is exhausted.
+The bounded GitHub-hosted Phase 10 investigation budget is exhausted and remains closed.
 
-Do not start another sandbox diagnostic experiment automatically.
-Further work requires an explicit design decision covering one of:
+The explicit runner strategy decision has now been made: Phase 10 proceeds through the approved Self-hosted Execution architecture defined in `SELF_HOSTED_EXECUTION.md`.
 
-- Codex CLI version strategy
-- runner / environment strategy
-- sandbox strategy
+Do not resume the GitHub-hosted workspace-write / bwrap investigation automatically. Reopening that investigation requires explicit user direction.
 
 Phase 10 remains `Next`.
-Phase 11 behavior is not entered by this stop condition.
+Phase 11 behavior is not entered merely by adopting the Self-hosted strategy.
