@@ -584,13 +584,28 @@ GitHub -> Windows credential-free inert dispatch
 
 Stage D
 Availability + negative integration validation
-- online
-- offline
-- busy
-- ineligible
+- `AVAILABLE` (credential-free probe pickup and successful completion)
+- `RUNNER_UNAVAILABLE` (bounded timeout, followed by verified cancellation)
+- `AVAILABILITY_CHECK_FAILED` (dispatch, polling, cancellation, or unexpected-state error)
 - advisory/race boundary
 - no long-lived credential expansion
 ```
+
+Phase 10 availability uses a GitHub-hosted controller to dispatch a
+credential-free, caller-defined self-hosted probe through `workflow_dispatch`.
+The controller polls at a bounded 15-second interval. It reports
+`AVAILABLE` only after the expected probe completes successfully; a timeout is
+`RUNNER_UNAVAILABLE` only after the probe is cancelled and observed as
+completed/cancelled. Dispatch, polling, cancellation, and unexpected-state
+errors fail closed as `AVAILABILITY_CHECK_FAILED`. This is an advisory check
+and does not distinguish offline, busy, or ineligible runners; those detailed
+classifications remain Phase 11 work. The controller may use only a
+job-scoped short-lived `GITHUB_TOKEN` with `actions: write` on the hosted job;
+no Administration permission, PAT, GitHub App, WIF, Secret, or Codex
+credential is used or passed to the self-hosted probe.
+The caller-owned probe must expose the generated correlation value in its
+workflow run name as `Availability probe ${{ inputs.probe_id }}` so concurrent
+dispatches cannot be confused.
 
 各checkpointで前Stageのblocking issueが無いことを確認してから次へ進む。approved design内のlocal bugはbounded fix / retestしてよい。以下のような新しいarchitecture/security判断が必要になった場合は、そのStageで `STOP_AND_REPORT` する。
 
@@ -621,8 +636,8 @@ GitHub ActionsからWindows self-hosted runnerへcredentialなしのjobを安全
 - abandoned mutex detection / ownership release
 - Execution ID / current-run state integration
 - post-run residual validation / idle preflight
-- runner availability pre-check
-- online / offline / busy / ineligible等の必要最小限のgate
+- runner availability pre-check using the bounded probe controller
+- `AVAILABLE` / `RUNNER_UNAVAILABLE` / `AVAILABILITY_CHECK_FAILED` gate
 - credential-free inert job
 - sanitized lifecycle logging
 
