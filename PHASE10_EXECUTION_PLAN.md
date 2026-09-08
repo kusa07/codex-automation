@@ -502,7 +502,15 @@ managed-area trust model自体を変更する必要がある場合はSTOPする�
 
 ### Status
 
-**In progress**
+**Complete**
+
+`CA-P10-029_002_003` completed the approved Stage D availability validation.
+The GitHub-hosted controller verified both `AVAILABLE` and
+`RUNNER_UNAVAILABLE` through the bounded credential-free probe path, including
+verified cancellation of the unavailable probe. No Administration credential,
+PAT, GitHub App, WIF, Secret, or Codex credential was introduced. The
+independent review found no blocking issue. Phase 10 remains `Next` in
+`ROADMAP.md`; the next planned management ID is `CA-P10-030`.
 
 `CA-P10-029_001` result:
 
