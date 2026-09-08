@@ -564,3 +564,15 @@ Do not resume the GitHub-hosted workspace-write / bwrap investigation automatica
 
 Phase 10 remains `Next`.
 Phase 11 behavior is not entered merely by adopting the Self-hosted strategy.
+
+## 17. Phase 10 execution planning and grounding
+
+The detailed Phase 10 implementation work units, read-only grounding gate, STOP conditions, task-result contract, and handoff rules are defined in `PHASE10_EXECUTION_PLAN.md`.
+
+The operational validation sequence in this document remains the lifecycle-level reference. `PHASE10_EXECUTION_PLAN.md` groups those logical steps into the approved `CA-P10-028` through `CA-P10-033` Codex instruction units.
+
+Before a Phase 10 task performs writes, the Parent agent must ground the prompt against the actual repository, documentation, local environment, and previous-task result, then classify the task as `PROCEED`, `ADJUST_WITHIN_SCOPE`, or `STOP_AND_REPORT` according to the plan.
+
+A planned implementation detail must not override actual safe state. If grounding reveals a material architecture, security, roadmap, caller-contract, or runtime-strategy mismatch, stop and report rather than broadening the investigation or silently redesigning the system.
+
+The next task must be prepared from the execution plan plus the actual result of the previous task. Do not advance merely because the previous task was expected to succeed.
