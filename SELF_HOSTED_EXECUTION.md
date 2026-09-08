@@ -916,3 +916,24 @@ Execution backend
 | Schema mismatch | normal job中は自動migrationせずSTOP |
 | Multi-repository optimization | 将来 |
 | Alternative executors | 将来 |
+
+---
+
+## 32. Phase 10 作業指示単位との対応
+
+この文書の段階的検証stepは、Codexへ渡す実作業指示では `PHASE10_EXECUTION_PLAN.md` に定義した以下の6単位へまとめて進める。
+
+| 管理番号 | 対応する段階 | 主目的 |
+|---|---|---|
+| `CA-P10-028` | B | Managed Execution Area実装 + negative-path検証 |
+| `CA-P10-029` | C + D | self-hosted runner / Git Bash / Mutex / availability / inert dispatch |
+| `CA-P10-030` | E | workspace lifecycle + Windows / Git Bash適応 |
+| `CA-P10-031` | F + G | WIF / Secret / isolated Codex runtime + read-only |
+| `CA-P10-032` | H + I | workspace-write + trusted publication再接続 |
+| `CA-P10-033` | J | Issue → Local Codex → Draft PR E2E validation |
+
+この対応はvalidation stepを省略するものではない。複数のlogical stepを同一grounding contextとfailure domainの中でまとめて実装・検証するための作業指示単位である。
+
+各管理番号の具体的なscope、grounding checklist、STOP条件、result contractは `PHASE10_EXECUTION_PLAN.md` を正とする。
+
+各taskはwrite前にread-only groundingを行い、計画上の想定をactual repository / host / previous-task resultと照合する。重大な差異がある場合は、計画に合わせて現実を無理に変更せず `STOP_AND_REPORT` としてUser / ChatGPTへ戻す。
