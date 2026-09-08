@@ -1,0 +1,97 @@
+name: Self-hosted inert execution
+
+on:
+  workflow_call:
+
+# This workflow reads only its immutable source so it can invoke the reviewed
+# local execution helpers. It never checks out the caller repository and has
+# no WIF, Secret Manager, Codex, or GitHub write capability.
+permissions:
+  contents: read
+
+jobs:
+  inert-dispatch:
+    name: Credential-free inert dispatch
+    runs-on: [self-hosted, Windows, X64, codex-automation]
+    timeout-minutes: 10
+    steps:
+      - name: Check out immutable reusable workflow source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: automation-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run managed inert lifecycle
+        shell: pwsh
+        env:
+          WORKFLOW_SOURCE_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SOURCE_SHA: ${{ job.workflow_sha }}
+          EXECUTION_REPOSITORY_ID: ${{ github.repository_id }}
+          EXECUTION_RUN_ID: ${{ github.run_id }}
+          EXECUTION_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) {
+            Write-Output 'FAIL_CLOSED'
+            exit 1
+          }
+
+          $sourceDirectory = Join-Path $env:GITHUB_WORKSPACE 'automation-source'
+          $inertScript = Join-Path $sourceDirectory 'scripts/self-hosted/run-local-execution.sh'
+          $areaScript = Join-Path $sourceDirectory 'scripts/self-hosted/manage-execution-area.sh'
+          if (-not (Test-Path -LiteralPath $inertScript -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $areaScript -PathType Leaf)) {
+            Write-Output 'FAIL_CLOSED'
+            exit 1
+          }
+
+          $bashProgram = @'
+set -euo pipefail
+fail() { printf '%s\n' 'FAIL_CLOSED'; exit 1; }
+
+[[ "${WORKFLOW_SOURCE_REPOSITORY:-}" == 'kusa07/codex-automation' ]] || fail
+[[ "${WORKFLOW_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || fail
+[[ "${EXECUTION_REPOSITORY_ID:-}" =~ ^[0-9]+$ ]] || fail
+[[ "${EXECUTION_RUN_ID:-}" =~ ^[0-9]+$ ]] || fail
+[[ "${EXECUTION_RUN_ATTEMPT:-}" =~ ^[0-9]+$ ]] || fail
+
+source_dir="$(cygpath -u -- "$1" 2>/dev/null)" || fail
+expected_sha="$WORKFLOW_SOURCE_SHA"
+actual_sha="$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)" || fail
+[[ "$actual_sha" == "$expected_sha" ]] || fail
+
+capture_sanitized() {
+  local status output line normalized
+  if output="$("$@" 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  while IFS= read -r line; do
+    normalized="${line%$'\r'}"
+    case "$normalized" in
+      PREFLIGHT_PASSED|LOCK_ACQUIRED|EXECUTION_STARTED|CLEANUP_PASSED|EXECUTION_FINISHED|ABANDONED_LOCK_DETECTED|FAIL_CLOSED) printf '%s\n' "$normalized" ;;
+      '') ;;
+      *) fail ;;
+    esac
+  done <<< "$output"
+  (( status == 0 )) || fail
+}
+
+"$source_dir/scripts/self-hosted/manage-execution-area.sh" ensure >/dev/null 2>&1 || fail
+printf '%s\n' 'PREFLIGHT_PASSED'
+capture_sanitized "$source_dir/scripts/self-hosted/run-local-execution.sh" run \
+  --repository-id "$EXECUTION_REPOSITORY_ID" \
+  --run-id "$EXECUTION_RUN_ID" \
+  --attempt "$EXECUTION_RUN_ATTEMPT" \
+  --inert
+'@
+
+          & $gitBash -lc $bashProgram -- $sourceDirectory
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
