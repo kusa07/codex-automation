@@ -133,6 +133,9 @@ Use the following documents according to the task:
 - `ROADMAP.md`
   - project phase and current position
 
+- `PHASE10_EXECUTION_PLAN.md`
+  - Phase 10 Codex work units, read-only grounding gate, STOP conditions, task-result contract, and handoff between `CA-P10-*` tasks
+
 - `ARCHITECTURE.md`
   - component responsibilities and system structure
 
@@ -156,7 +159,32 @@ Use the following documents according to the task:
 
 Read all documents materially relevant to the change before implementation.
 
-For any task that creates, modifies, validates, or operates Self-hosted Execution, `SELF_HOSTED_EXECUTION.md`, `SECURITY.md`, and `OPERATIONS.md` are mandatory reading.
+For any task that creates, modifies, validates, or operates Self-hosted Execution, `PHASE10_EXECUTION_PLAN.md`, `SELF_HOSTED_EXECUTION.md`, `SECURITY.md`, and `OPERATIONS.md` are mandatory reading.
+
+## Phase 10 grounding gate
+
+For every Phase 10 implementation or validation task identified as `CA-P10-*`, the Parent agent must perform read-only grounding before making task-related repository or host changes.
+
+The grounding must compare the planned assumptions in `PHASE10_EXECUTION_PLAN.md` and the current prompt against actual state, including the relevant repository state, current documentation, local environment, and the previous `CA-P10-*` result when one exists.
+
+Classify the result as one of:
+
+- `PROCEED`
+  - actual state matches the approved plan closely enough to implement as instructed
+- `ADJUST_WITHIN_SCOPE`
+  - a small implementation detail differs, but it can be adapted without changing architecture, security boundaries, roadmap, caller contract, or authorized task scope
+- `STOP_AND_REPORT`
+  - a material mismatch requires a new design, security decision, roadmap change, caller-contract change, destructive recovery, major runtime-strategy change, or expansion into a different failure domain
+
+Do not treat a plan assumption as fact merely because it is written in a task description. Read the current repository and environment first.
+
+Do not start subagents merely because the task plan lists possible roles. Parent grounding comes first, then use only the roles justified by the actual task complexity and risk.
+
+When the grounding result is `STOP_AND_REPORT`, do not continue by inventing a new architecture, restarting the closed GitHub-hosted bwrap investigation, or consuming an unbounded investigation budget. Report the actual state, the mismatch, the options, and the decision required from the user.
+
+Each Phase 10 task final report must include the grounding result, assumptions that differed from actual state, files changed, validation performed, unresolved uncertainty, whether an architecture/security/roadmap decision is required, and the next planned management ID.
+
+The next task prompt must be based on the current plan plus the actual result of the previous task, not on the plan alone.
 
 ## Security invariants
 
