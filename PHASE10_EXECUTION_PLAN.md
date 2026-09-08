@@ -28,14 +28,33 @@ Phase 10のSelf-hosted Execution architectureは承認済みであり、関連do
 
 GitHub-hosted Ubuntuでのworkspace-write / bwrap investigationはclosedであり、自動的に再開しない。
 
+`CA-P10-028` のManaged Execution Area実装・negative-path validationは完了し、`CA-P10-028.5` でauthoritative `main`へ着地済みである。
+
+着地commit:
+
+```text
+db588b22d97bc04efc9664fce0872d3a6e969d74
+Implement managed self-hosted execution area
+```
+
+着地済み成果物:
+
+```text
+scripts/self-hosted/manage-execution-area.sh
+scripts/self-hosted/managed-execution-area.ps1
+scripts/self-hosted/test-managed-execution-area.sh
+```
+
 次の実作業は:
 
 ```text
-CA-P10-028
-Managed Execution Area implementation + negative-path validation
+CA-P10-029
+Self-hosted runner / Git Bash / Mutex / availability / inert dispatch
 ```
 
 である。
+
+`CA-P10-028.5_002` は、このactual progressをexecution planへ同期するdocumentation-only管理番号であり、Phase 10のcore work unitを追加するものではない。
 
 ---
 
@@ -65,22 +84,35 @@ B〜Jは検証上のlogical stepであり、Codexへの指示文は必ずしも1
 
 ## 4. Codex作業指示単位
 
-Phase 10は、現時点では以下の6作業指示単位で進める。
+Phase 10は、現時点では以下の6つのcore work unitで進める。
 
-| 管理番号 | 対応step | 作業塊 | 目的 | 想定重さ |
-|---|---|---|---|---|
-| `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 |
-| `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 |
-| `CA-P10-030` | E | 2 | Workspace lifecycle + 既存bashのWindows/Git Bash適応 | 中〜重 |
-| `CA-P10-031` | F + G | 2 | WIF / Secret / isolated Codex runtime + Local Codex read-only | 重 |
-| `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 |
-| `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 |
+| 管理番号 | 対応step | 作業塊 | 目的 | 想定重さ | 状態 |
+|---|---|---|---|---|---|
+| `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 | Complete / landed |
+| `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Next |
+| `CA-P10-030` | E | 2 | Workspace lifecycle + 既存bashのWindows/Git Bash適応 | 中〜重 | Planned |
+| `CA-P10-031` | F + G | 2 | WIF / Secret / isolated Codex runtime + Local Codex read-only | 重 | Planned |
+| `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Planned |
+| `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Planned |
 
 計画上の6件を機械的に守ること自体は目的ではない。
 
 read-only groundingの結果、1件のscopeが安全に実施できないほど大きい、またはfailure domainが予想以上に分離している場合は、その場で勝手に追加taskへ分割せず、`STOP_AND_REPORT` としてChatGPT / Userへ戻す。
 
 逆に、後続taskの内容を前倒しで実装してはならない。明示的な承認なく管理番号のscopeを拡大しない。
+
+### 4.1 補助管理番号
+
+Core work unitの実装結果を安全に着地させる、またはexecution planをactual stateへ同期するために、補助管理番号を使用してよい。
+
+現時点の補助管理番号:
+
+| 管理番号 | 目的 | 状態 |
+|---|---|---|
+| `CA-P10-028.5` | `CA-P10-028`の検証済み3ファイルをauthoritative `main`へ着地 | Complete |
+| `CA-P10-028.5_002` | `CA-P10-028` / `CA-P10-028.5`実績を本計画へ同期 | Complete |
+
+補助管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
 ---
 
@@ -349,6 +381,26 @@ next Codex instruction
 
 ## 11. CA-P10-028 — Managed Execution Area
 
+### Status
+
+**Complete / fully landed**
+
+Authoritative commit:
+
+```text
+db588b22d97bc04efc9664fce0872d3a6e969d74
+```
+
+Actual implementation:
+
+- `scripts/self-hosted/manage-execution-area.sh`
+- `scripts/self-hosted/managed-execution-area.ps1`
+- `scripts/self-hosted/test-managed-execution-area.sh`
+
+Actual validation included Git Bash entrypoint validation, PowerShell parser validation, ensure/preflight success paths, fail-closed negative paths, idempotency, stable marker identity, atomic marker creation, residue checks, unknown-root-entry rejection, and junction/reparse-point rejection.
+
+Grounding found that the original local checkout was stale and dirty, so implementation was performed in a clean isolated clone without modifying the pre-existing dirty tree. Git for Windows Bash was explicitly distinguished from Windows/WSL `bash.exe`.
+
 ### Goal
 
 Managed Execution Areaを安全に作成・識別・検証できるようにし、正常系と主要なnegative pathを同一task内で検証する。
@@ -445,6 +497,19 @@ GitHub ActionsからWindows self-hosted runnerへcredentialなしのjobを安全
 - Windows runner / Git Bash actual behavior
 - `CA-P10-028` actual implementation
 - GitHub-hosted precheckからself-hosted jobへのjob boundary
+- current `CA-P10-028` managed root schemaではroot直下の許可entryが `state`, `workspaces`, `codex-home`, `temp`, `logs` とmarkerに限定され、unknown root entryはfail closedになること
+- `SELF_HOSTED_EXECUTION.md` の概念例には `runner\` が含まれているため、runner本体のphysical placementを実装前にgroundingすること
+
+Runner placementについて、次を計画だけから決め打ちしない:
+
+```text
+A. runner本体をmanaged execution root外へ置く
+B. runnerをmanaged root schemaの正式entryへ追加する
+```
+
+`CA-P10-028`のtrust model / schemaを変更せずAを採用できるならscope内適応として扱える可能性がある。
+
+Bのようにmanaged-area schema / trust boundary自体を変更する必要がある場合は、通常の029実装へ進む前にarchitecture/security影響を明示し、必要なら `STOP_AND_REPORT` とする。
 
 ### Completion concept
 
