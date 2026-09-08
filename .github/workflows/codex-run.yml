@@ -15,10 +15,16 @@ on:
         description: Full resource name of the trusted Workload Identity Provider
         required: true
         type: string
+      validation_mode:
+        description: Run the isolated self-hosted read-only validation path
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   connectivity-test:
     name: Test direct WIF and Secret access
+    if: ${{ inputs.validation_mode != true }}
     runs-on: ubuntu-latest
     concurrency:
       group: codex-${{ github.repository_id }}
@@ -1446,5 +1452,261 @@ jobs:
             rmdir --ignore-fail-on-non-empty -- "${HOME}/.codex"
           fi
           echo "Temporary authentication files removed"
+
+  self-hosted-read-only-validation:
+    name: Self-hosted isolated Local Codex read-only validation
+    if: ${{ inputs.validation_mode == true }}
+    runs-on: [self-hosted, Windows, X64, codex-automation]
+    concurrency:
+      group: codex-${{ github.repository_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CALLER_REPOSITORY_NAME: ${{ github.event.repository.name }}
+      GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
+      WORKLOAD_IDENTITY_PROVIDER: ${{ inputs.workload_identity_provider }}
+      CONNECTIVITY_SECRET_ID: codex-auth-${{ github.event.repository.name }}
+      CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
+      CODEX_HOME: C:/codex-self-hosted/codex-home
+      CODEX_VERSION: 0.148.0
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout caller repository without persisted credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          path: caller-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout immutable automation helpers without persisted credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: automation-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify runner and caller baseline
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 1
+          caller_source="${GITHUB_WORKSPACE}/caller-source"
+          [[ "$(git -C "${caller_source}" remote get-url origin)" == *"${GITHUB_REPOSITORY}"* ]] || {
+            echo "Caller repository identity mismatch" >&2
+            exit 1
+          }
+          [[ -z "$(git -C "${caller_source}" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Caller checkout is not clean" >&2
+            exit 1
+          }
+          git -C "${caller_source}" rev-parse --verify HEAD >/dev/null
+          command -v powershell.exe >/dev/null 2>&1
+          command -v bash >/dev/null 2>&1
+          command -v git >/dev/null 2>&1
+          echo "Self-hosted runner and caller baseline validated"
+
+      - name: Verify immutable automation source
+        env:
+          EXPECTED_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          EXPECTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_WORKFLOW_REPOSITORY}" == "kusa07/codex-automation" ]] || {
+            echo "Reusable workflow repository identity mismatch" >&2
+            exit 1
+          }
+          actual_source_origin="$(git -C "${GITHUB_WORKSPACE}/automation-source" remote get-url origin)"
+          actual_source_origin="${actual_source_origin%.git}"
+          case "${actual_source_origin}" in
+            https://github.com/kusa07/codex-automation|git@github.com:kusa07/codex-automation) ;;
+            *) echo "Automation source repository identity mismatch" >&2; exit 1 ;;
+          esac
+          actual_source_sha="$(git -C "${GITHUB_WORKSPACE}/automation-source" rev-parse HEAD)"
+          [[ "${actual_source_sha}" == "${EXPECTED_WORKFLOW_SHA}" ]] || {
+            echo "Automation source does not match the reusable workflow SHA" >&2
+            exit 1
+          }
+
+      - name: Ensure managed execution area
+        run: |
+          set -euo pipefail
+          script_dir="${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted"
+          "${script_dir}/manage-execution-area.sh" ensure
+          "${script_dir}/manage-execution-area.sh" preflight
+
+      - name: Authenticate to Google Cloud with direct WIF
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          workload_identity_provider: ${{ inputs.workload_identity_provider }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          version: ">= 363.0.0"
+
+      - name: Move Google credentials outside the caller workspace
+        run: |
+          set -euo pipefail
+          umask 077
+          caller_source="${GITHUB_WORKSPACE}/caller-source"
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" && "${GOOGLE_GHA_CREDS_PATH}" == "${caller_source}"/* ]]; then
+            echo "Google credential file is inside the caller checkout" >&2
+            exit 1
+          fi
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" && -f "${GOOGLE_GHA_CREDS_PATH}" ]]; then
+            relocated_credentials="${RUNNER_TEMP}/codex-google-credentials.json"
+            install -m 600 -- "${GOOGLE_GHA_CREDS_PATH}" "${relocated_credentials}"
+            rm -f -- "${GOOGLE_GHA_CREDS_PATH}"
+            {
+              printf 'GOOGLE_GHA_CREDS_PATH=%s\n' "${relocated_credentials}"
+              printf 'GOOGLE_APPLICATION_CREDENTIALS=%s\n' "${relocated_credentials}"
+              printf 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=%s\n' "${relocated_credentials}"
+            } >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run isolated Local Codex read-only task under Mutex
+        env:
+          CODEX_RESULT_FILE: ${{ runner.temp }}/codex-read-only-result.txt
+          CODEX_PAYLOAD_FILE: ${{ runner.temp }}/codex-read-only-payload.sh
+          CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
+          AUTHORITATIVE_VERSION_FILE: ${{ runner.temp }}/codex-authoritative-version.txt
+          BASE_SHA_FILE: ${{ runner.temp }}/codex-base-sha.txt
+          PAYLOAD_STATUS_FILE: ${{ runner.temp }}/codex-read-only-payload.status
+          WORKSPACE_NAME: codex-read-only-${{ github.run_id }}-${{ github.run_attempt }}
+          EXECUTION_ID: repo-${{ github.repository_id }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          git -C "${GITHUB_WORKSPACE}/caller-source" rev-parse HEAD > "${BASE_SHA_FILE}"
+          cat > "${CODEX_PAYLOAD_FILE}" <<'PAYLOAD'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          automation_source="$(cygpath -u -- "$1")"
+          caller_source_posix="$(cygpath -u -- "$2")"
+          caller_source="$(cygpath -aw -- "$2")"
+          workspace_name="$3"
+          execution_id="$4"
+          base_sha="$5"
+          result_file="$(cygpath -u -- "$6")"
+          managed_root="$(cygpath -u -- "${CODEX_AUTOMATION_ROOT}")"
+          workspace_path="${managed_root}/workspaces/${workspace_name}"
+          codex_home="${managed_root}/codex-home/${workspace_name}"
+          runner_temp="$(cygpath -u -- "${RUNNER_TEMP}")"
+          secret_file="$(cygpath -u -- "${CONNECTIVITY_SECRET_FILE}")"
+          version_file="$(cygpath -u -- "${AUTHORITATIVE_VERSION_FILE}")"
+          auth_hash_file="${runner_temp}/codex-auth-before.sha256"
+          stderr_file="${runner_temp}/codex-read-only.stderr"
+          task_file="${runner_temp}/codex-read-only-task.md"
+          cli_prefix="${runner_temp}/codex-cli-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          prepared=0
+          cleanup() {
+            status=$?
+            if (( prepared )); then
+              "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" cleanup --active-run \
+                --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" \
+                --workspace-name "${workspace_name}" --execution-id "${execution_id}" >/dev/null || status=1
+            fi
+            rm -f -- "${secret_file}" "${version_file}" "${auth_hash_file}" "${stderr_file}" "${task_file}" "${result_file}"
+            rm -rf -- "${cli_prefix}"
+            rm -f -- "${codex_home}/auth.json" "${codex_home}/config.toml"
+            if [[ -d "${codex_home}" ]]; then
+              [[ -z "$(find "${codex_home}" -mindepth 1 -print -quit)" ]] || {
+                echo "Execution-specific Codex home is not residue-free" >&2
+                status=1
+              }
+              rmdir -- "${codex_home}" 2>/dev/null || status=1
+            fi
+            exit "${status}"
+          }
+          trap cleanup EXIT
+          [[ "${automation_source}" != "${caller_source_posix}" ]] || {
+            echo "Automation source and caller source must be distinct" >&2
+            exit 1
+          }
+          [[ "${CALLER_REPOSITORY_NAME}" =~ ^[A-Za-z0-9._-]+$ ]] || exit 1
+          mapfile -t enabled_versions < <(gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --filter='state=ENABLED' --format='value(name.basename())')
+          [[ ${#enabled_versions[@]} -eq 1 && "${enabled_versions[0]}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "Expected exactly one enabled authentication version" >&2
+            exit 1
+          }
+          printf '%s\n' "${enabled_versions[0]}" > "${version_file}"
+          chmod 600 -- "${version_file}"
+          gcloud secrets versions access "${enabled_versions[0]}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --secret="${CONNECTIVITY_SECRET_ID}" --out-file="${secret_file}" --quiet
+          [[ -s "${secret_file}" ]] || exit 1
+          mkdir -p -- "${codex_home}" && chmod 700 -- "${codex_home}"
+          install -m 600 -- "${secret_file}" "${codex_home}/auth.json"
+          printf '%s\n' 'cli_auth_credentials_store = "file"' > "${codex_home}/config.toml"
+          chmod 600 -- "${codex_home}/config.toml"
+          sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1 > "${auth_hash_file}"
+          npm install --prefix "${cli_prefix}" "@openai/codex@${CODEX_VERSION}" >/dev/null
+          export PATH="${cli_prefix}/node_modules/.bin:${PATH}"
+          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]] || exit 1
+          CODEX_HOME="${codex_home}" codex login status >/dev/null 2>&1 || exit 1
+          "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" prepare --active-run \
+            --local-source "${caller_source}" --expected-repository "${GITHUB_REPOSITORY}" \
+            --base-sha "${base_sha}" --workspace-name "${workspace_name}" --execution-id "${execution_id}"
+          prepared=1
+          cd -- "${workspace_path}"
+          printf '%s\n' 'Read this repository and return a short summary of its top-level structure. Do not modify files, git state, branches, or credentials.' > "${task_file}"
+          CODEX_HOME="${codex_home}" codex --ask-for-approval never exec --sandbox read-only --ephemeral --cd "${workspace_path}" --json --output-last-message "$result_file" < "$task_file" >/dev/null 2>"${stderr_file}"
+          [[ -s "$result_file" ]]
+          [[ -z "$(git -C "$workspace_path" status --porcelain=v1 --untracked-files=all)" ]]
+          [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || {
+            echo "Codex authentication changed; refusing adoption" >&2
+            exit 1
+          }
+          PAYLOAD
+          chmod 700 -- "${CODEX_PAYLOAD_FILE}"
+          if "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/run-local-execution.sh" run \
+            --repository-id "${GITHUB_REPOSITORY_ID}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --payload-path "C:/Program Files/Git/bin/bash.exe" \
+            --payload-arg "$(cygpath -aw "${CODEX_PAYLOAD_FILE}")" \
+            --payload-arg "$(cygpath -aw "${GITHUB_WORKSPACE}/automation-source")" \
+            --payload-arg "$(cygpath -aw "${GITHUB_WORKSPACE}/caller-source")" \
+            --payload-arg "${WORKSPACE_NAME}" --payload-arg "${EXECUTION_ID}" \
+            --payload-arg "$(<"${BASE_SHA_FILE}")" --payload-arg "${CODEX_RESULT_FILE}"; then
+            printf '%s\n' PASS > "${PAYLOAD_STATUS_FILE}"
+          else
+            payload_exit=$?
+            printf '%s\n' FAIL > "${PAYLOAD_STATUS_FILE}"
+            exit "${payload_exit}"
+          fi
+
+      - name: Clean managed workspace and isolated authentication state
+        if: always()
+        env:
+          CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
+          AUTHORITATIVE_VERSION_FILE: ${{ runner.temp }}/codex-authoritative-version.txt
+          BASE_SHA_FILE: ${{ runner.temp }}/codex-base-sha.txt
+          CODEX_RESULT_FILE: ${{ runner.temp }}/codex-read-only-result.txt
+          CODEX_PAYLOAD_FILE: ${{ runner.temp }}/codex-read-only-payload.sh
+          PAYLOAD_STATUS_FILE: ${{ runner.temp }}/codex-read-only-payload.status
+          RELOCATED_GOOGLE_CREDS_FILE: ${{ runner.temp }}/codex-google-credentials.json
+        run: |
+          set -euo pipefail
+          payload_passed=false
+          if [[ -f "${PAYLOAD_STATUS_FILE}" && "$(<"${PAYLOAD_STATUS_FILE}")" == PASS ]]; then
+            payload_passed=true
+          fi
+          rm -f -- "${CONNECTIVITY_SECRET_FILE}" "${AUTHORITATIVE_VERSION_FILE}" "${CODEX_RESULT_FILE}" "${CODEX_PAYLOAD_FILE}" "${BASE_SHA_FILE}" "${PAYLOAD_STATUS_FILE}" "${RELOCATED_GOOGLE_CREDS_FILE}"
+          "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/manage-execution-area.sh" preflight
+          if [[ "${payload_passed}" != true ]]; then
+            echo "The locked read-only payload did not complete successfully" >&2
+            exit 1
+          fi
+          echo "Self-hosted read-only validation cleanup passed"
 
 

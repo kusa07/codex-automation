@@ -1,0 +1,179 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][ValidateSet('prepare', 'cleanup', 'preflight')][string]$Action,
+    [Parameter(Mandatory = $true)][string]$Root,
+    [string]$RepositoryUrl,
+    [string]$LocalSourcePath,
+    [Parameter(Mandatory = $true)][string]$ExpectedRepository,
+    [Parameter(Mandatory = $true)][string]$BaseSha,
+    [Parameter(Mandatory = $true)][string]$WorkspaceName,
+    [Parameter(Mandatory = $true)][string]$ExecutionId,
+    [switch]$ActiveRun
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$ManagedAreaHelper = Join-Path $PSScriptRoot 'managed-execution-area.ps1'
+$WorkspaceSchema = 1
+
+function Fail([string]$Message) { Write-Output 'FAIL_CLOSED'; throw "workspace lifecycle failed closed: $Message" }
+function FullPath([string]$Path) { try { return [IO.Path]::GetFullPath($Path) } catch { Fail 'invalid root' } }
+function Assert-Token([string]$Value, [string]$Name, [string]$Pattern) { if ([string]::IsNullOrWhiteSpace($Value) -or $Value -notmatch $Pattern) { Fail "$Name is invalid" } }
+function Assert-Inputs {
+    Assert-Token $BaseSha 'base SHA' '^[0-9a-fA-F]{40}$'
+    Assert-Token $ExecutionId 'execution ID' '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+    Assert-Token $WorkspaceName 'workspace name' '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    Assert-Token $ExpectedRepository 'repository identity' '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    if ($Action -eq 'prepare' -and [string]::IsNullOrWhiteSpace($RepositoryUrl) -eq ([string]::IsNullOrWhiteSpace($LocalSourcePath))) { Fail 'exactly one repository source is required' }
+    if (-not [string]::IsNullOrWhiteSpace($RepositoryUrl) -and ($RepositoryUrl -notmatch '^(https://github\.com/|git@github\.com:)' -or $RepositoryUrl -match '[\r\n]')) { Fail 'repository URL is not an allowed GitHub URL' }
+    if (-not [string]::IsNullOrWhiteSpace($LocalSourcePath) -and $LocalSourcePath -match '[\r\n]') { Fail 'local source path is invalid' }
+}
+function Invoke-ManagedPreflight([string]$FullRoot) { & $ManagedAreaHelper -Action preflight -Root $FullRoot | Out-Null }
+function Assert-ManagedWorkspaceBoundary([string]$FullRoot) {
+    if (-not (Test-Path -LiteralPath $FullRoot -PathType Container)) { Fail 'managed root is missing' }
+    $rootItem = Get-Item -LiteralPath $FullRoot -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Fail 'managed root is a reparse point' }
+    $expected = @('.codex-automation-managed','state','workspaces','codex-home','temp','logs')
+    $actual = @(Get-ChildItem -LiteralPath $FullRoot -Force | ForEach-Object { $_.Name })
+    foreach ($entry in $actual) { if ($expected -notcontains $entry) { Fail 'managed root contains an unexpected entry' } }
+    foreach ($entry in $expected) {
+        $path = Join-Path $FullRoot $entry
+        if (-not (Test-Path -LiteralPath $path)) { Fail 'managed root is missing a required entry' }
+        if ($entry -ne '.codex-automation-managed' -and -not (Test-Path -LiteralPath $path -PathType Container)) { Fail 'managed root entry has an unexpected type' }
+    }
+    Assert-NoReparsePath (Join-Path $FullRoot 'workspaces')
+}
+function Assert-NoReparsePath([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    while ($null -ne $item) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Fail 'reparse point in workspace path' }
+        $item = $item.Parent
+    }
+}
+function Normalize-Repository([string]$Value) {
+    $normalized = $Value.Trim() -replace '\.git$',''
+    if ($normalized -match 'github\.com[:/](?<repo>[^/]+/[^/]+)$') { return $Matches.repo }
+    return $normalized
+}
+function Get-WorkspacePath([string]$FullRoot) {
+    $workspaceRoot = FullPath (Join-Path $FullRoot 'workspaces')
+    $path = FullPath (Join-Path $workspaceRoot $WorkspaceName)
+    if (-not $path.StartsWith($workspaceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { Fail 'workspace escapes managed workspaces' }
+    return $path
+}
+function Get-MarkerPath([string]$WorkspacePath) { return Join-Path $WorkspacePath '.codex-workspace-owned.json' }
+function Read-OwnershipMarker([string]$WorkspacePath) {
+    $markerPath = Get-MarkerPath $WorkspacePath
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { Fail 'workspace ownership marker is missing' }
+    try { $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json } catch { Fail 'workspace ownership marker is malformed' }
+    $expected = @('base_sha','execution_id','repository','schema','workspace_name')
+    $actual = @($marker.PSObject.Properties.Name | Sort-Object)
+    if ((@($expected | Sort-Object) -join '|') -ne ($actual -join '|')) { Fail 'workspace ownership marker fields are not exact' }
+    if ([int]$marker.schema -ne $WorkspaceSchema -or [string]$marker.execution_id -cne $ExecutionId -or [string]$marker.workspace_name -cne $WorkspaceName -or [string]$marker.repository -cne $ExpectedRepository -or [string]$marker.base_sha -cne $BaseSha) { Fail 'workspace ownership marker does not match requested execution' }
+    return $marker
+}
+function Invoke-Git([string[]]$Arguments) {
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & git @Arguments 1>$null 2>$null
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($exitCode -ne 0) { Fail "git operation failed ($($Arguments[0]))" }
+}
+function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipMarker) {
+    $actualRemote = (& git -C $WorkspacePath remote get-url origin 2>$null).Trim()
+    if ((Normalize-Repository $actualRemote) -cne $ExpectedRepository) { Fail 'cloned repository identity is unexpected' }
+    $head = (& git -C $WorkspacePath rev-parse HEAD 2>$null).Trim()
+    if ($head -cne $BaseSha.ToLowerInvariant()) { Fail 'workspace HEAD does not match immutable base SHA' }
+    $status = @(& git -C $WorkspacePath status --porcelain=v1 --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($AllowOwnershipMarker) {
+        $status = @($status | Where-Object { $_ -ne '?? .codex-workspace-owned.json' })
+    }
+    if ($status.Count -ne 0) { Fail 'workspace base state is not clean' }
+}
+function Assert-SourceState([string]$SourcePath) {
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Container)) { Fail 'local source is missing' }
+    $sourceFull = FullPath $SourcePath
+    $actualRemote = (& git -C $sourceFull remote get-url origin 2>$null).Trim()
+    if ((Normalize-Repository $actualRemote) -cne $ExpectedRepository) { Fail 'local source repository identity is unexpected' }
+    $head = (& git -C $sourceFull rev-parse HEAD 2>$null).Trim()
+    if ($head -cne $BaseSha.ToLowerInvariant()) { Fail 'local source HEAD does not match immutable base SHA' }
+    $status = @(& git -C $sourceFull status --porcelain=v1 --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($status.Count -ne 0) { Fail 'local source is not clean' }
+    return $sourceFull
+}
+function Assert-ActiveRunState([string]$FullRoot) {
+    $statePath = Join-Path (Join-Path $FullRoot 'state') 'current-run.json'
+    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { Fail 'active current-run state is missing' }
+    try { $state = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop | ConvertFrom-Json } catch { Fail 'active current-run state is malformed' }
+    $expected = @('execution_id','github_run_attempt','github_run_id','repository_id','schema','started_at_utc')
+    $actual = @($state.PSObject.Properties.Name | Sort-Object)
+    if ((@($expected | Sort-Object) -join '|') -ne ($actual -join '|')) { Fail 'active current-run fields are not exact' }
+    if ([int]$state.schema -ne 1 -or [string]$state.execution_id -cne $ExecutionId) { Fail 'active current-run identity does not match execution' }
+    if ([string]$state.repository_id -notmatch '^[0-9]+$' -or [string]$state.github_run_id -notmatch '^[0-9]+$' -or [string]$state.github_run_attempt -notmatch '^[0-9]+$') { Fail 'active current-run identity fields are invalid' }
+    if ([string]::IsNullOrWhiteSpace([string]$state.started_at_utc)) { Fail 'active current-run timestamp is invalid' }
+}
+
+Assert-Inputs
+$fullRoot = FullPath $Root
+$workspacePath = Get-WorkspacePath $fullRoot
+$workspaceRoot = Split-Path -Parent $workspacePath
+
+if ($Action -eq 'preflight') {
+    Invoke-ManagedPreflight $fullRoot
+    if (Test-Path -LiteralPath $workspacePath) { Fail 'workspace already exists; refusing reuse' }
+    Write-Output 'WORKSPACE_PREFLIGHT_PASSED'
+    exit 0
+}
+
+if ($Action -eq 'prepare') {
+    if ($ActiveRun) { Assert-ManagedWorkspaceBoundary $fullRoot; Assert-ActiveRunState $fullRoot } else { Invoke-ManagedPreflight $fullRoot }
+    if (Test-Path -LiteralPath $workspacePath) { Fail 'workspace already exists; refusing reuse or unknown state' }
+    New-Item -ItemType Directory -Path $workspaceRoot -Force | Out-Null
+    try {
+        $usingUrlSource = [string]::IsNullOrWhiteSpace($LocalSourcePath)
+        if ($usingUrlSource) {
+            $cloneSource = $RepositoryUrl
+            $cloneRemote = $RepositoryUrl
+        } else {
+            $cloneSource = Assert-SourceState (FullPath $LocalSourcePath)
+            $cloneRemote = (& git -C $cloneSource remote get-url origin 2>$null).Trim()
+        }
+        Invoke-Git @('clone','--no-local','--no-checkout','--no-tags','--config','credential.helper=','--',$cloneSource,$workspacePath)
+        if (-not [string]::IsNullOrWhiteSpace($LocalSourcePath)) { Invoke-Git @('-C',$workspacePath,'remote','set-url','origin',$cloneRemote) }
+        if ($usingUrlSource) { Invoke-Git @('-C',$workspacePath,'fetch','--no-tags','--depth','1','origin',$BaseSha) }
+        Invoke-Git @('-C',$workspacePath,'checkout','--detach','--force',$BaseSha)
+        Assert-RepositoryState $workspacePath
+        $marker = [ordered]@{ schema=$WorkspaceSchema; workspace_name=$WorkspaceName; execution_id=$ExecutionId; repository=$ExpectedRepository; base_sha=$BaseSha.ToLowerInvariant() }
+        $markerPath = Get-MarkerPath $workspacePath
+        $tempMarker = "$markerPath.$([guid]::NewGuid().ToString('N')).tmp"
+        try { [IO.File]::WriteAllText($tempMarker, (($marker | ConvertTo-Json -Compress) + "`n"), [Text.UTF8Encoding]::new($false)); Move-Item -LiteralPath $tempMarker -Destination $markerPath -Force } finally { if (Test-Path -LiteralPath $tempMarker) { Remove-Item -LiteralPath $tempMarker -Force -ErrorAction SilentlyContinue } }
+        Write-Output 'WORKSPACE_PREPARED'
+        Write-Output "WORKSPACE_PATH=$workspacePath"
+        exit 0
+    } catch {
+        try {
+            if (Test-Path -LiteralPath $workspacePath) { Remove-Item -LiteralPath $workspacePath -Recurse -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $workspacePath) { throw 'workspace residue remains after failed prepare' }
+        } catch {
+            Write-Output 'FAIL_CLOSED'
+            throw 'workspace prepare failed and cleanup did not prove residue-free'
+        }
+        throw
+    }
+}
+
+Assert-ManagedWorkspaceBoundary $fullRoot
+if ($ActiveRun) { Assert-ActiveRunState $fullRoot }
+if (Test-Path -LiteralPath $workspacePath) { Assert-NoReparsePath $workspacePath }
+Read-OwnershipMarker $workspacePath | Out-Null
+Assert-RepositoryState $workspacePath -AllowOwnershipMarker
+try {
+    Remove-Item -LiteralPath $workspacePath -Recurse -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $workspacePath) { Fail 'workspace cleanup left residue' }
+    if ($ActiveRun) { Assert-ManagedWorkspaceBoundary $fullRoot } else { Invoke-ManagedPreflight $fullRoot }
+    Write-Output 'WORKSPACE_CLEANED'
+} catch { Fail 'workspace cleanup failed' }
