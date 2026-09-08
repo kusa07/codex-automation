@@ -100,12 +100,15 @@ C:\codex-self-hosted\
 
 root path は設定可能とする。
 
-概念的な構成例:
+Phase 10初期実装では、GitHub Actions self-hosted runner本体はManaged Execution Areaの外部に置く。
+
+概念的なホスト上の構成例:
 
 ```text
+C:\codex-runner\
+    └─ GitHub Actions self-hosted runner本体
+
 C:\codex-self-hosted\
-│
-├─ runner\
 ├─ workspaces\
 ├─ codex-home\
 ├─ temp\
@@ -113,7 +116,13 @@ C:\codex-self-hosted\
 └─ logs\
 ```
 
-この領域は automation 専用とする。
+`C:\codex-runner\` は例であり、runnerのactual pathはbootstrap時に明示的に決定してよい。
+
+ただしrunner directoryはManaged Execution Area schemaの一部ではない。`CA-P10-028`で確立したmanaged rootのknown-entry / unknown-entry fail-closed境界を保つため、normal setup中にrunner directoryをexecution root直下へ追加してはならない。
+
+将来runnerをManaged Execution Area内へ移す場合は、execution-area schema / trust boundary変更として明示的に設計・migrationを行う。
+
+Self-hosted Execution Areaはautomation専用とする。
 
 ユーザーが普段使用している Codex 設定や通常の開発用 repository は、原則として automation 実行には使用しない。
 
@@ -158,9 +167,12 @@ Self-hosted Execution Area に独立した business logic を持たせてはな�
 - GitHub Actions self-hosted runner の導入
 - runner の GitHub への登録
 - Windows Service / 自動起動設定
-- 必要なローカルファイル権限の設定
+- runnerを実行するWindows identityの確定
+- 必要なローカルファイル権限およびlocal lock accessの設定
 
 権限昇格や security-sensitive な初期設定を、通常の Codex 実行中に暗黙に行ってはならない。
+
+runner用の専用local accountはPhase 10必須要件とはしない。ただし、normal executionでrunnerがどのWindows identity / SIDとして動くかは明示的に確定し、そのidentityとlocal filesystem権限およびGlobal named MutexのDACLが整合していることを確認する。
 
 ### 6.2 通常の Ensure
 
@@ -277,13 +289,20 @@ Self-hosted Execution Area 内の情報は、すべて同じ寿命ではない�
 
 ### 9.1 Persistent / 再利用可能
 
-例:
+execution area内の例:
 
-- GitHub Actions runner本体
 - 管理領域marker
 - schema情報
 - sanitized operational state
 - 再利用可能なdirectory structure
+
+execution area外のpersistent host componentとして:
+
+- GitHub Actions self-hosted runner本体
+
+が存在する。
+
+runner本体がpersistentであっても、Managed Execution Areaのschema memberとして扱わない。
 
 ### 9.2 Runごとに一時的
 
@@ -318,21 +337,43 @@ GitHub Actions concurrency は dispatch / queue 側の競合を減らす。
 
 local execution lock は、実際のpersistent host上で同時実行が起きないことを最終的に保証するための境界とする。
 
-初期実装の local lock は Windows named Mutex を標準案とする。
+初期実装の local lock は Windows named Mutex とし、session-localな `Local\` namespaceではなくcross-sessionで共有される `Global\` namespaceを使用する。
+
+概念的なMutex名:
+
+```text
+Global\codex-automation-<execution-area-id>
+```
+
+実際の名前は、managed markerのexecution-area固有IDからdeterministicかつsecretを含まない形で導出する。同一execution areaに対するrunner service / interactive diagnostic process等がWindows sessionをまたいでも同じlockへ収束できることを目的とする。
+
+Global Mutexはdefault broad ACLへ依存せず、明示的なDACL / security descriptorを設定する。normal executionで必要なrunner Windows identityへ必要最小限のMutex accessを与え、`Everyone`等への不要な広いaccessを前提としない。
+
+専用runner accountはPhase 10必須ではないが、runner registration / service setup時にactual Windows identity / SIDをgroundingし、Mutexを安全にcreate/openできることを検証する。必要な権限を成立させられない場合はsession-local Mutexへfallbackせず fail closed / STOPとする。
 
 named Mutex を選ぶ理由は、プロセス異常終了後に abandoned mutex として検出可能であり、単純な lock file よりも stale lock 判定を実装しやすいためである。
 
 abandoned mutex を検出した場合は「lockが空いた」とみなしてそのまま続行せず、前回実行が正常終了しなかった兆候として扱う。
 
-概念:
+.NETのabandoned Mutex検出では、exceptionが通知された時点で呼び出し側がownershipを取得している場合がある。そのため初期実装は以下の順序を守る。
 
 ```text
 ABANDONED_LOCK_DETECTED
     ↓
+Mutex ownershipは保持
+    ↓
 current-run / residual state確認
+    ↓
+payloadは実行しない
+    ↓
+曖昧stateを自動修復・正常化しない
+    ↓
+finally相当でMutex ownershipをrelease
     ↓
 fail closed
 ```
+
+abandoned detection後にownershipをreleaseせずprocessを終えることを正常経路にしてはならない。
 
 lock file方式へ変更する場合は、staleness判定基準を別途明示的に設計・承認する。
 
@@ -544,10 +585,33 @@ Codex実行が成功でも失敗でも、可能な限りcleanupを行う。
 - temporary GitHub credential helpers
 - privileged execution contextを含む一時task file
 - その他run単位のsecret / token
+- 自分が作成した `state/current-run.json`
+
+normal execution lifecycleでは、payload / commandのsuccessまたはfailureを保持したままcleanupを行う。
+
+概念:
+
+```text
+payload / command resultを保持
+    ↓
+自分が作成したrun-local stateをcleanup
+    ↓
+post-run residual-state validation
+    ↓
+idle preflight
+    ↓
+結果を確定
+    ↓
+local Mutex release
+```
+
+command failureだからという理由でpost-run validationを省略してはならない。
+
+一方、中断・abandoned・identity不一致等でstate ownershipが曖昧な場合は、未知stateを削除して正常化してはならない。自分が安全に所有していると確認できるrun-local stateだけを通常cleanup対象とする。
 
 cleanup後は residual-state validation を行う。
 
-必要なsecurity cleanupが失敗した場合、Codex処理自体が成功していても、Self-hosted Execution全体を完全成功として扱わない。
+必要なsecurity cleanupまたはpost-run validationが失敗した場合、Codex処理自体が成功していても、Self-hosted Execution全体を完全成功として扱わない。
 
 ---
 
@@ -637,7 +701,11 @@ self-hosted runner
 Local Codex
 ```
 
-runner registration scope、labels、eligibility、repository bindingは明示的に設計する。
+runner本体のphysical homeはManaged Execution Area外のpersistent locationとする。runnerをexecution-area schemaへ含めない。
+
+runner registration scope、labels、eligibility、repository binding、execution account / service modeは明示的に設計・groundingする。
+
+専用runner accountは必須ではないが、actual Windows identity / SIDは明示的に確定し、Global named Mutex DACLと必要なlocal filesystem permissionがそのidentityに対して成立することを検証する。
 
 GitHub上のresource bindingがcaller側に必要であっても、Self-hosted Executionという機能の論理的所有者は `codex-automation` とする。
 
@@ -734,7 +802,8 @@ GitHub-hosted runnerと異なり、job終了後もローカルstateが残る可�
 
 - 明示的managed-area ownership
 - known-state preflight
-- execution area全体の排他制御
+- execution area全体のcross-session排他制御
+- Global named Mutexへの明示的least-privilege DACL
 - Execution IDによる二重実行防止
 - 必要時のみcredential restore
 - credential locationの限定
@@ -823,7 +892,7 @@ Self-hosted Executionは段階的に導入する。
 2. bootstrap / managed execution areaを作成
 3. marker / schema / atomic state writeを検証
 4. ensure / preflightを検証
-5. local lock / abandoned lock behaviorを検証
+5. Global local lock / DACL / abandoned lock / post-cleanup behaviorを検証
 6. self-hosted runnerを登録・確認
 7. credentialを使わないinert jobを実行
 8. workspace作成・cleanupを検証
@@ -889,14 +958,18 @@ Execution backend
 | 機能の所有者 | `codex-automation` |
 | 物理execution area | Git repository外 |
 | execution area lifecycle | `codex-automation` が管理 |
+| Runner physical home | Managed Execution Area外のpersistent location |
+| Runner account | explicit Windows identityを確定。専用accountはPhase 10必須ではない |
 | 通常ユーザーworkspace | 原則使用しない |
 | 通常ユーザーCodex home | 原則使用しない |
 | 初期Executor | Local Codex |
 | Dispatch | GitHub Actions self-hosted runner |
 | Execution area同時実行 | 1 job |
 | GitHub側排他 | GitHub Actions concurrency |
-| Local側排他 | Windows named Mutex |
-| Abandoned mutex | 中断兆候としてfail closed |
+| Local側排他 | Windows `Global\` named Mutex |
+| Mutex identity | execution-area固有IDからdeterministicに導出 |
+| Mutex access | explicit least-privilege DACLをrunner Windows identityへ設定 |
+| Abandoned mutex | ownership保持中にresidual inspection、payload禁止、release後fail closed |
 | Execution ID | caller + GitHub run identityから一意化 |
 | Marker | execution area identity / schema |
 | Current state | `state/current-run.json` 等で分離 |
@@ -910,7 +983,7 @@ Execution backend
 | Codex publication権限 | working-treeのみ |
 | Commit / push / PR | trusted automation |
 | Pre-job residual check | 必須 |
-| Post-job cleanup check | 必須 |
+| Post-job cleanup check | current-run cleanup後のresidual validation / idle preflightを含め必須 |
 | Audit trail | sanitized GitHub Actions logを主要経路とする |
 | 未知の既存directory | fail closed |
 | Schema mismatch | normal job中は自動migrationせずSTOP |
