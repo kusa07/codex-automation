@@ -45,16 +45,29 @@ scripts/self-hosted/managed-execution-area.ps1
 scripts/self-hosted/test-managed-execution-area.sh
 ```
 
+`CA-P10-029_001` ではlocal execution controlをisolated worktree内で試作・検証したが、Independent Reviewerがcross-session Mutex / abandoned ownership / post-cleanup validationのblocking issueを検出したため、`STOP_AND_REPORT` とした。候補実装はauthoritative `main`へ着地していない。
+
+User / ChatGPT判断として、`CA-P10-029_001_002` で以下を承認した。
+
+- GitHub Actions runner本体はManaged Execution Areaの外部に置き、`CA-P10-028`のmanaged-root schemaは変更しない
+- local lockはsession-localな `Local\` named Mutexではなく、cross-sessionで共有される `Global\` named Mutexを使用する
+- Mutex名はexecution-area identityから安定して導出する
+- Global Mutexには明示的DACLを設定し、normal executionで必要なrunner Windows identityへ必要最小限のaccessを与える
+- 専用runner accountはPhase 10必須とはしないが、runnerの実行identityは明示的に確定・検証する
+- abandoned Mutex検出時はownership取得済みとして扱い、lockを保持したままresidual stateを検査し、payloadを実行せず、finally相当でreleaseしてfail closedする
+- command success/failureにかかわらず、自分が作成した`current-run.json`のcleanup後にpost-run residual validation / idle preflightを行い、その後にMutexをreleaseする
+
 次の実作業は:
 
 ```text
-CA-P10-029
-Self-hosted runner / Git Bash / Mutex / availability / inert dispatch
+CA-P10-029_002
+approved Global Mutex / state / cleanup designに沿って
+local execution controlを修正・再検証し、029前半を完了させる
 ```
 
 である。
 
-`CA-P10-028.5_002` は、このactual progressをexecution planへ同期するdocumentation-only管理番号であり、Phase 10のcore work unitを追加するものではない。
+runner registration / GitHub dispatch / availabilityを後続で1本にまとめられるかは、`CA-P10-029_002` のactual resultを見て判断する。`029_003` は現時点では固定しない。
 
 ---
 
@@ -89,7 +102,7 @@ Phase 10は、現時点では以下の6つのcore work unitで進める。
 | 管理番号 | 対応step | 作業塊 | 目的 | 想定重さ | 状態 |
 |---|---|---|---|---|---|
 | `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 | Complete / landed |
-| `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Next |
+| `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | In progress |
 | `CA-P10-030` | E | 2 | Workspace lifecycle + 既存bashのWindows/Git Bash適応 | 中〜重 | Planned |
 | `CA-P10-031` | F + G | 2 | WIF / Secret / isolated Codex runtime + Local Codex read-only | 重 | Planned |
 | `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Planned |
@@ -101,18 +114,21 @@ read-only groundingの結果、1件のscopeが安全に実施できないほど�
 
 逆に、後続taskの内容を前倒しで実装してはならない。明示的な承認なく管理番号のscopeを拡大しない。
 
-### 4.1 補助管理番号
+### 4.1 補助・分割管理番号
 
-Core work unitの実装結果を安全に着地させる、またはexecution planをactual stateへ同期するために、補助管理番号を使用してよい。
+Core work unitの実装結果を安全に着地させる、execution planをactual stateへ同期する、または利用枠 / failure domainに応じてcore work unitを安全に分割するために補助管理番号を使用してよい。
 
-現時点の補助管理番号:
+現時点の補助・分割管理番号:
 
 | 管理番号 | 目的 | 状態 |
 |---|---|---|
 | `CA-P10-028.5` | `CA-P10-028`の検証済み3ファイルをauthoritative `main`へ着地 | Complete |
 | `CA-P10-028.5_002` | `CA-P10-028` / `CA-P10-028.5`実績を本計画へ同期 | Complete |
+| `CA-P10-029_001` | local execution controlのgrounding / 試作 / review | STOP_AND_REPORT / not landed |
+| `CA-P10-029_001_002` | `029_001`のblocking findingを受けたrunner placement / Global Mutex / ACL / cleanup設計決定と計画同期 | Complete |
+| `CA-P10-029_002` | approved local-lock/state/cleanup設計でlocal execution controlを修正・再検証 | Next |
 
-補助管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
+補助・分割管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
 ---
 
@@ -252,7 +268,7 @@ remembered stateや過去chatよりcurrent repository documentationを優先す�
 
 例:
 
-- Windows version
+- Windows version / build
 - Git Bash availability / version
 - Git
 - `gh`
@@ -262,6 +278,8 @@ remembered stateや過去chatよりcurrent repository documentationを優先す�
 - Codex CLI
 - self-hosted runner state
 - relevant filesystem/path behavior
+
+Windows product nameの表示差だけでOS要件違反と断定しない。必要な場合はbuild/versionまで確認する。
 
 未使用のtoolまで毎回網羅的に調査する必要はない。
 
@@ -469,6 +487,52 @@ managed-area trust model自体を変更する必要がある場合はSTOPする�
 
 ## 12. CA-P10-029 — Runner / Git Bash / Mutex / inert dispatch
 
+### Status
+
+**In progress**
+
+`CA-P10-029_001` result:
+
+```text
+STOP_AND_REPORT
+```
+
+`029_001`ではisolated worktree内に以下の候補実装を作成したが、blocking reviewのためcommit/pushせず、authoritative `main`への変更は0件とした。
+
+```text
+scripts/self-hosted/local-execution.ps1
+scripts/self-hosted/run-local-execution.sh
+scripts/self-hosted/test-local-execution.sh
+```
+
+Blocking findings:
+
+1. `Local\...` MutexはWindows session単位であり、将来runner serviceとinteractive processが別sessionになった場合にexecution-area全体の排他を保証できない
+2. `AbandonedMutexException`発生時はownership取得済みだが、候補実装はそのownershipを確実にreleaseしていなかった
+3. command failure時、`current-run.json`削除後のpost-run residual validation / idle preflightがhelper内部で保証されていなかった
+
+`CA-P10-029_001_002` で承認した設計:
+
+- runner本体はManaged Execution Area外のpersistent locationへ置く。例: `C:\codex-runner\`。これはexecution-area schemaの一部ではない
+- `C:\codex-self-hosted\` の028 schemaは維持し、runner追加のためにschemaを変更しない
+- local lockは `Global\` named Mutexとする
+- Mutex名はexecution-area固有IDから安定して導出し、同じexecution areaをcross-sessionで同じlockへ収束させる
+- Global Mutexはdefault broad ACLに依存せず明示的DACLを使う。normal executionで必要なrunner Windows identityに必要最小限のaccessを与える
+- 専用runner accountはPhase 10の必須条件にはしない。ただしrunner service/accountを設定する際はactual Windows identity / SIDをgroundingして、Mutex DACLとlocal filesystem権限に整合させる
+- abandoned Mutex検出時はownershipを保持したまま `ABANDONED_LOCK_DETECTED` を記録し、current-run / residual stateを検査する。payloadは実行しない。曖昧stateを正常化せず、finally相当でMutex ownershipをreleaseしてfail closedする
+- normal command success / command failureの双方で、自分が作成した`current-run.json`をcleanupした後にpost-run residual validation / idle preflightを行い、その結果を確定してからMutexをreleaseする
+- cleanup / residual validation failureはfull successとして扱わない
+
+次の分割task:
+
+```text
+CA-P10-029_002
+```
+
+では、`029_001`の未着地候補をそのまま信頼せず、authoritative main + approved design + actual isolated worktreeをgroundingし、Global Mutex / DACL / abandoned handling / post-cleanup validationを修正・再検証する。
+
+`029_002`成功後に、残りのrunner registration / eligibility / GitHub inert dispatch / availability pre-checkを1本にまとめられるか再評価する。
+
 ### Goal
 
 GitHub ActionsからWindows self-hosted runnerへcredentialなしのjobを安全にdispatchし、local execution serializationとavailability gatingの基礎を成立させる。
@@ -496,20 +560,22 @@ GitHub ActionsからWindows self-hosted runnerへcredentialなしのjobを安全
 - caller側と`codex-automation`側のresponsibility boundary
 - Windows runner / Git Bash actual behavior
 - `CA-P10-028` actual implementation
+- `CA-P10-029_001` STOP resultと未着地candidate
+- `CA-P10-029_001_002`で承認したGlobal Mutex / runner external placement / DACL / cleanup semantics
 - GitHub-hosted precheckからself-hosted jobへのjob boundary
 - current `CA-P10-028` managed root schemaではroot直下の許可entryが `state`, `workspaces`, `codex-home`, `temp`, `logs` とmarkerに限定され、unknown root entryはfail closedになること
-- `SELF_HOSTED_EXECUTION.md` の概念例には `runner\` が含まれているため、runner本体のphysical placementを実装前にgroundingすること
 
-Runner placementについて、次を計画だけから決め打ちしない:
+Runner placementは以下で確定する:
 
 ```text
-A. runner本体をmanaged execution root外へ置く
-B. runnerをmanaged root schemaの正式entryへ追加する
+runner本体
+    = Managed Execution Area外
+
+Managed Execution Area
+    = CA-P10-028 schemaを維持
 ```
 
-`CA-P10-028`のtrust model / schemaを変更せずAを採用できるならscope内適応として扱える可能性がある。
-
-Bのようにmanaged-area schema / trust boundary自体を変更する必要がある場合は、通常の029実装へ進む前にarchitecture/security影響を明示し、必要なら `STOP_AND_REPORT` とする。
+runnerをmanaged root schemaへ追加しない。
 
 ### Completion concept
 
@@ -522,11 +588,13 @@ availability decision
     ↓
 self-hosted runner
     ↓
-managed-area preflight / local lock
+managed-area preflight / Global local lock
     ↓
 Git Bash inert command
     ↓
-cleanup / state completion
+cleanup / post-run residual validation
+    ↓
+lock release
 ```
 
 を通す。
@@ -537,13 +605,15 @@ WIF / Secret / Codex executionへ進まない。
 
 runner trust / ownership / permission modelがdocumentationと食い違う場合はSTOPする。
 
+Global Mutexの作成/openまたは明示DACLをactual runner identityで安全に成立させられない場合、session-local lockへ勝手にfallbackせずSTOPする。
+
 ### Initial recommended routing
 
 - Model: Terra
 - Reasoning: High
 - Speed: Fast
 - Parent + Implementer + Tester
-- riskが上がった場合のみIndependent Reviewer
+- local lock / ACL / abandoned handlingはIndependent Reviewer対象とする
 
 ---
 
