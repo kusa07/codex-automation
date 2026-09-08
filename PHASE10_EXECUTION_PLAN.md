@@ -63,42 +63,48 @@ User / ChatGPT判断として、`CA-P10-029_001_002` で以下を承認した。
 
 `CA-P10-029_002_002` はこの承認を本計画へ同期するdocumentation-only管理番号である。
 
+`CA-P10-029_002_003` ではStage Dのavailability validationを完了し、`AVAILABLE` / `RUNNER_UNAVAILABLE` を実機検証した。Independent Reviewerにblocking findingはなく、Administration credential / PAT / GitHub App / WIF / Secret / Codex credentialの追加も行っていない。
+
+`CA-P10-029` は **Complete** であり、完了記録は以下のauthoritative `main` commitへ着地済みである。
+
+```text
+f7a6483a3d15f9bed87e91cd5fc89afbbdd31f48
+Mark CA-P10-029 complete
+```
+
+`ROADMAP.md` のPhase 10 statusは引き続き `Next` のままとする。
+
 次の実作業は:
 
 ```text
-CA-P10-029_002
-CA-P10-029 remaining implementation + integration + validation
-
-Stage A: local execution control completion
-Stage B: self-hosted runner bootstrap / registration / binding
-Stage C: GitHub -> Windows credential-free inert dispatch
-Stage D: availability / negative integration validation
+CA-P10-030
+Workspace lifecycle + existing bash Windows / Git Bash adaptation
 ```
 
-である。
-
-各Stageの間にcheckpointを置き、前Stageがblockingなら後Stageへ進まない。approved design内の局所bugはbounded fix / retestしてよいが、新しいarchitecture / security boundaryが必要になった場合は `STOP_AND_REPORT` する。
-
-`CA-P10-029_003` は現時点では作成しない。`CA-P10-029_002` が全completion criteriaを満たした場合は `CA-P10-029` をCompleteとし、次の実作業は `CA-P10-030` とする。
+である。WIF / Secret / Codex executionへはまだ進まない。
 
 ---
 
 ## 3. Phase 10 全体の作業塊
 
-Phase 10の残作業は、以下の4つの作業塊として扱う。
+Phase 10の作業塊と現在地は以下とする。
 
 ```text
 作業塊 1: Self-hosted基盤
     B + C + D
+    Complete
 
 作業塊 2: 既存資産をSelf-hostedへ載せる
     E + F + G
+    Next: CA-P10-030 (E)
 
 作業塊 3: Write + Publication
     H + I
+    Planned
 
 作業塊 4: End-to-End
     J
+    Planned
 ```
 
 B〜Jは検証上のlogical stepであり、Codexへの指示文は必ずしも1 step = 1指示とはしない。
@@ -114,8 +120,8 @@ Phase 10は、現時点では以下の6つのcore work unitで進める。
 | 管理番号 | 対応step | 作業塊 | 目的 | 想定重さ | 状態 |
 |---|---|---|---|---|---|
 | `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 | Complete / landed |
-| `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | In progress |
-| `CA-P10-030` | E | 2 | Workspace lifecycle + 既存bashのWindows/Git Bash適応 | 中〜重 | Planned |
+| `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Complete |
+| `CA-P10-030` | E | 2 | Workspace lifecycle + 既存bashのWindows/Git Bash適応 | 中〜重 | Next |
 | `CA-P10-031` | F + G | 2 | WIF / Secret / isolated Codex runtime + Local Codex read-only | 重 | Planned |
 | `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Planned |
 | `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Planned |
@@ -138,8 +144,9 @@ Core work unitの実装結果を安全に着地させる、execution planをactu
 | `CA-P10-028.5_002` | `CA-P10-028` / `CA-P10-028.5`実績を本計画へ同期 | Complete |
 | `CA-P10-029_001` | local execution controlのgrounding / 試作 / review | STOP_AND_REPORT / not landed |
 | `CA-P10-029_001_002` | `029_001`のblocking findingを受けたrunner placement / Global Mutex / ACL / cleanup設計決定と計画同期 | Complete |
-| `CA-P10-029_002` | CA-P10-029の残り全体: local execution control完成 + runner登録/binding + inert dispatch + availability/integration validation | Next (re-run after scope sync) |
+| `CA-P10-029_002` | CA-P10-029の残り全体: local execution control完成 + runner登録/binding + inert dispatch + availability/integration validation | Complete (finalized by `CA-P10-029_002_003`) |
 | `CA-P10-029_002_002` | `029_002`をStage A〜Dのremaining work全体へ拡張する承認を本計画へ同期 | Complete |
+| `CA-P10-029_002_003` | Stage D availability validation + Independent Reviewer + CA-P10-029 completion | Complete |
 
 補助・分割管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
@@ -624,7 +631,7 @@ dispatches cannot be confused.
 - WIF / Secret / Codex executionへscopeを広げる必要
 - alternative scheduler / orchestratorへ設計変更する必要
 
-`CA-P10-029_003` は現時点では作成しない。
+`CA-P10-029_003` は作成せず、`CA-P10-029_002_003` でCA-P10-029を完了した。
 
 ### Goal
 
@@ -720,6 +727,10 @@ public repositoryへのunsafe runner exposure、long-lived PAT追加、broad per
 ---
 
 ## 13. CA-P10-030 — Workspace / Git Bash Windows adaptation
+
+### Status
+
+**Next**
 
 ### Goal
 
