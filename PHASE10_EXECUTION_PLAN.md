@@ -78,7 +78,7 @@ Mark CA-P10-029 complete
 
 ```text
 CA-P10-030
-Workspace lifecycle + existing bash Windows / Git Bash adaptation
+Integrated workspace lifecycle + authentication + Local Codex read-only
 ```
 
 である。WIF / Secret / Codex executionへはまだ進まない。
@@ -96,7 +96,7 @@ Phase 10の作業塊と現在地は以下とする。
 
 作業塊 2: 既存資産をSelf-hostedへ載せる
     E + F + G
-    Next: CA-P10-030 (E)
+    Next: CA-P10-030 (E + F + G)
 
 作業塊 3: Write + Publication
     H + I
@@ -115,18 +115,17 @@ B〜Jは検証上のlogical stepであり、Codexへの指示文は必ずしも1
 
 ## 4. Codex作業指示単位
 
-Phase 10は、現時点では以下の6つのcore work unitで進める。
+Phase 10は、現時点では以下の5つのcore work unitで進める。
 
 | 管理番号 | 対応step | 作業塊 | 目的 | 想定重さ | 状態 |
 |---|---|---|---|---|---|
 | `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 | Complete / landed |
 | `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Complete |
-| `CA-P10-030` | E | 2 | Workspace lifecycle + 既存bashのWindows/Git Bash適応 | 中〜重 | Next |
-| `CA-P10-031` | F + G | 2 | WIF / Secret / isolated Codex runtime + Local Codex read-only | 重 | Planned |
+| `CA-P10-030` | E + F + G | 2 | Workspace lifecycle + Windows/Git Bash adaptation + WIF/Secret + isolated Local Codex read-only | 重 | Next |
 | `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Planned |
 | `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Planned |
 
-計画上の6件を機械的に守ること自体は目的ではない。
+計画上の5件を機械的に守ること自体は目的ではない。
 
 read-only groundingの結果、1件のscopeが安全に実施できないほど大きい、またはfailure domainが予想以上に分離している場合は、その場で勝手に追加taskへ分割せず、`STOP_AND_REPORT` としてChatGPT / Userへ戻す。
 
@@ -726,7 +725,7 @@ public repositoryへのunsafe runner exposure、long-lived PAT追加、broad per
 
 ---
 
-## 13. CA-P10-030 — Workspace / Git Bash Windows adaptation
+## 13. CA-P10-030 — Integrated Workspace + Authentication + Local Codex Read-only
 
 ### Status
 
@@ -734,9 +733,9 @@ public repositoryへのunsafe runner exposure、long-lived PAT追加、broad per
 
 ### Goal
 
-caller repositoryのautomation-managed workspace lifecycleを成立させ、既存Linux/bash中心のPhase 10資産をWindows + Git Bash上でどこまで安全に再利用できるかを確定する。
+caller repositoryのautomation-managed workspace lifecycleを成立させ、既存Linux/bash中心のPhase 10資産をWindows + Git Bashへ適応する。続けて、既存のWIF / Secret authentication lifecycleをpersistent Self-hosted hostへ安全に適応し、isolated automation Codex runtimeからread-only Codex taskを1件実行する。
 
-対応step: **E**
+対応step: **E + F + G**
 
 ### Initial expected scope
 
@@ -750,6 +749,12 @@ caller repositoryのautomation-managed workspace lifecycleを成立させ、既�
 - `install`, `chmod`, `sha256sum`, `trap`等のactual compatibility
 - `git`, `gh` interaction
 - existing bash codeのminimal adaptation
+- GitHub OIDC / WIF
+- caller Secret selectionとexactly-one-enabled-version preflight
+- isolated automation Codex runtime / home
+- auth restore、baseline、changed-state handling、existing candidate persistence / adoption lifecycle
+- bounded credential locations、cleanup、residual check
+- Local Codex read-only execution
 
 ### Grounding重点
 
@@ -757,61 +762,28 @@ caller repositoryのautomation-managed workspace lifecycleを成立させ、既�
 
 実際に成立しない場合、PowerShell全面移植へ勝手に切り替えずSTOPして報告する。
 
+WIF trust condition、IAM、Secret isolation、normal user Codex runtime、またはcredential-location policyを変更する必要がある場合もSTOPする。
+
 ### Completion concept
 
-credentialなしでcaller repoを既知状態へcheckout / prepare / validate / cleanupでき、後続のauth / Codexを載せられる状態にする。
+credential-free workspace lifecycleを成立させた後、既存のWIF / Secret / auth lifecycleを維持してisolated Local Codex read-only taskを実行する。workspace-write、commit、push、Draft Pull Requestは含めない。
 
 ### Initial recommended routing
 
 - Model: Terra
 - Reasoning: High
 - Speed: Fast
-- Parent + Implementer + Tester
+- Parentがfull task context owner
+- Stage A: Implementer + Tester
+- Stage B: Implementer + Tester + Independent Reviewer
 
 ---
 
-## 14. CA-P10-031 — WIF / Secret / isolated Local Codex read-only
+## 14. CA-P10-031 — Historical record
 
-### Goal
+`CA-P10-031` was absorbed into `CA-P10-030` by explicit user approval before implementation. Its original F + G scope—WIF / Secret adaptation, isolated automation Codex runtime, authentication lifecycle, cleanup, and one Local Codex read-only task—is preserved as the Stage B scope of the integrated `CA-P10-030` work unit.
 
-既存のvalidated authentication lifecycleをSelf-hosted persistent Windows hostへ適応し、isolated automation Codex runtimeからread-only Codex taskを1件通す。
-
-対応step: **F + G**
-
-### Initial expected scope
-
-- GitHub OIDC / WIF
-- caller Secret selection
-- exactly-one-enabled-version preflight
-- isolated automation Codex runtime / home
-- auth restore
-- Codex login validation
-- auth baseline / changed-state handling
-- candidate Secret persistence / adoption existing logicの適応
-- bounded credential locations
-- cleanup / residual check
-- Local Codex read-only execution
-
-### Grounding重点
-
-- existing WIF / Secret workflow implementation
-- actual self-hosted OIDC behavior
-- `CA-P10-030`で確認したGit Bash / path compatibility
-- normal user Codex runtimeを使わないこと
-- credentialのlocal authoritative stateを作らないこと
-
-### STOP
-
-workspace-write、commit、push、Draft PRへ進まない。
-
-WIF trust condition / IAM / Secret isolationのarchitecture変更が必要ならSTOPする。
-
-### Initial recommended routing
-
-- Model: Terra
-- Reasoning: High
-- Speed: Fast
-- Parent + Implementer + Tester + Independent Reviewer
+`CA-P10-031` is not an independently executable task. After successful integrated completion, the next planned management ID is `CA-P10-032`.
 
 ---
 
