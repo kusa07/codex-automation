@@ -1,0 +1,689 @@
+# Phase 10 Execution Plan
+
+## 1. 目的
+
+この文書は、`ROADMAP.md` の Phase 10 を実際にどの順序・作業指示単位で進めるかを定義する。
+
+Phase 10 の目的とcompletion criteriaは `ROADMAP.md`、Self-hosted Executionのarchitecture / security boundaryは `SELF_HOSTED_EXECUTION.md` を正とする。
+
+この文書は、それらを変更するものではなく、実装・検証をCodexへ依頼する際のexecution planとgrounding ruleを固定するための運用上の正本である。
+
+Phase 10中は、ChatGPTとCodexはこの文書に記録された作業単位、順序、grounding gate、STOP条件を前提に進行する。
+
+---
+
+## 2. 現在地
+
+現在のauthoritative roadmap stateは以下である。
+
+```text
+Phase 9
+  Complete
+
+Phase 10
+  Next
+```
+
+Phase 10のSelf-hosted Execution architectureは承認済みであり、関連documentationも整合済みである。
+
+GitHub-hosted Ubuntuでのworkspace-write / bwrap investigationはclosedであり、自動的に再開しない。
+
+次の実作業は:
+
+```text
+CA-P10-028
+Managed Execution Area implementation + negative-path validation
+```
+
+である。
+
+---
+
+## 3. Phase 10 全体の作業塊
+
+Phase 10の残作業は、以下の4つの作業塊として扱う。
+
+```text
+作業塊 1: Self-hosted基盤
+    B + C + D
+
+作業塊 2: 既存資産をSelf-hostedへ載せる
+    E + F + G
+
+作業塊 3: Write + Publication
+    H + I
+
+作業塊 4: End-to-End
+    J
+```
+
+B〜Jは検証上のlogical stepであり、Codexへの指示文は必ずしも1 step = 1指示とはしない。
+
+同じfailure domain、同じ環境、同じgrounding contextで連続して実装・検証した方が安全かつ効率的なものは1つの管理番号へまとめる。
+
+---
+
+## 4. Codex作業指示単位
+
+Phase 10は、現時点では以下の6作業指示単位で進める。
+
+| 管理番号 | 対応step | 作業塊 | 目的 | 想定重さ |
+|---|---|---|---|---|
+| `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 |
+| `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 |
+| `CA-P10-030` | E | 2 | Workspace lifecycle + 既存bashのWindows/Git Bash適応 | 中〜重 |
+| `CA-P10-031` | F + G | 2 | WIF / Secret / isolated Codex runtime + Local Codex read-only | 重 |
+| `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 |
+| `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 |
+
+計画上の6件を機械的に守ること自体は目的ではない。
+
+read-only groundingの結果、1件のscopeが安全に実施できないほど大きい、またはfailure domainが予想以上に分離している場合は、その場で勝手に追加taskへ分割せず、`STOP_AND_REPORT` としてChatGPT / Userへ戻す。
+
+逆に、後続taskの内容を前倒しで実装してはならない。明示的な承認なく管理番号のscopeを拡大しない。
+
+---
+
+## 5. Git Bash 方針
+
+Phase 10のWindows Self-hosted Executionでは、既存のbash資産を最大限再利用する。
+
+基本方針:
+
+```text
+GitHub Actions self-hosted runner
+    ↓
+Git Bash
+    ├─ existing bash workflow logic
+    ├─ git / gh
+    ├─ node / npm
+    ├─ gcloud
+    └─ Codex CLI
+
+Windows固有処理のみ
+    ↓
+PowerShell / .NET helper
+```
+
+PowerShellへworkflow全体を全面移植することはPhase 10の初期方針ではない。
+
+Windows固有処理の例:
+
+- Windows named Mutex
+- NTFS / ACL関連処理
+- Windows path / reparse point検証
+- 必要なatomic replace処理
+- Windows Service / runner bootstrapに必要な処理
+
+`chmod` 等のPOSIX permission操作がGit Bash上で成功しても、それだけをWindows上のsecurity boundaryとみなしてはならない。
+
+既存bashの実際の互換性は `CA-P10-030` でgrounding / validationする。
+
+---
+
+## 6. Grounding Gate
+
+各 `CA-P10-*` 作業は、writeを始める前にParent agentがread-only groundingを行う。
+
+目的は、ChatGPTが作成した指示文の想定と、実際のrepository / local machine / workflow / previous resultとの差を実装前に検出することである。
+
+### 6.1 判定
+
+Grounding結果は、以下のいずれかへ分類する。
+
+#### PROCEED
+
+計画上の想定とactual stateが一致しており、承認済みscopeのまま安全に実装できる。
+
+→ 指示された実装・検証へ進む。
+
+#### ADJUST_WITHIN_SCOPE
+
+実装詳細に小さな差異があるが、architecture、security boundary、roadmap、caller contract、task scopeを変えずに適応できる。
+
+例:
+
+- 実際のtool pathが想定と少し異なる
+- 既存helperの配置が想定と異なる
+- Git Bash上のpath表現へ小さな適応が必要
+- docsで想定したdirectory名より既存の適切な共通utilityが存在する
+
+→ actual stateへ合わせて実装してよい。ただし最終報告で差分と対応を明記する。
+
+#### STOP_AND_REPORT
+
+以下のような差異がある場合はwrite前、または安全な停止点で停止する。
+
+- architecture変更が必要
+- security boundaryを変更する必要がある
+- roadmap structure / completion criteria変更が必要
+- caller contractの変更が必要
+- runner ownership / trust modelが計画と実際で矛盾する
+- credential handlingの新しい保存先・権限拡張が必要
+- destructive recoveryが必要
+- unknown / ambiguous managed execution areaが存在する
+- current local worktreeの既存変更とtaskが安全に共存できない
+- 想定したGit Bash再利用方針が成立せず、PowerShell全面移植等の大きなstrategy changeが必要
+- closed済みGitHub-hosted bwrap investigationの再開が必要
+- 計画されたtaskを別failure domainへ大きく拡張する必要がある
+
+→ 勝手に新設計や長時間調査へ進まず、actual state、差分、選択肢を報告してUser / ChatGPT判断を待つ。
+
+---
+
+## 7. 共通 Grounding Checklist
+
+各task開始時、Parentは必要範囲で以下をread-only確認する。
+
+### 7.1 Repository state
+
+- local repository identity
+- current branch
+- local HEAD
+- remote default branch / remote HEAD
+- ahead / behind
+- tracked dirty files
+- untracked files
+- taskに関係する既存実装
+- previous `CA-P10-*` で作成されたfiles / changes
+
+既存のdirty stateがあっても、次を自動実行してはならない。
+
+```text
+reset
+stash
+clean
+rebase
+force push
+```
+
+既存変更を消したり隠したりせず、安全に共存できない場合はSTOPする。
+
+### 7.2 Documentation
+
+少なくともtaskに関連する以下を読む。
+
+- `ROADMAP.md`
+- `PHASE10_EXECUTION_PLAN.md`
+- `SELF_HOSTED_EXECUTION.md`
+- `AGENTS.md`
+- `SECURITY.md`
+- `OPERATIONS.md`
+- `CONTRACT.md`
+- 必要に応じて `ARCHITECTURE.md`, `GOOGLE_CLOUD.md`, `PROTOCOL.md`
+
+remembered stateや過去chatよりcurrent repository documentationを優先する。
+
+### 7.3 Local environment
+
+そのtaskで必要な範囲でactual environmentを確認する。
+
+例:
+
+- Windows version
+- Git Bash availability / version
+- Git
+- `gh`
+- PowerShell
+- Node / npm
+- gcloud
+- Codex CLI
+- self-hosted runner state
+- relevant filesystem/path behavior
+
+未使用のtoolまで毎回網羅的に調査する必要はない。
+
+### 7.4 Previous task result
+
+前taskが存在する場合、以下を確認する。
+
+- management ID
+- actual changes
+- validated behavior
+- unresolved uncertainty
+- temporary diagnostic codeの有無
+- documented next task
+
+前taskの「計画上成功するはず」ではなく、実際に検証済みの内容を次taskのinputとする。
+
+---
+
+## 8. Groundingから実装への流れ
+
+各taskの基本フローは以下とする。
+
+```text
+Parent read-only grounding
+    ↓
+actual state と plan / prompt を照合
+    ↓
+PROCEED / ADJUST_WITHIN_SCOPE / STOP_AND_REPORT
+    ↓
+必要な場合のみsubagent routing
+    ↓
+implementation
+    ↓
+validation
+    ↓
+必要なら bounded fix / retest
+    ↓
+final review
+    ↓
+report
+```
+
+Subagentを使うこと自体を目的にしない。
+
+Parentはgrounding後に、taskの実際の複雑性とriskに応じて必要なroleだけを使う。
+
+重大なarchitecture / security / roadmap判断はsubagentやParentが独自決定せず、User / ChatGPTへ戻す。
+
+---
+
+## 9. Investigation / usage-budget guardrail
+
+1つの大きな指示へまとめる理由は、毎回のdocs再読・repository grounding・環境確認の重複を減らすためである。
+
+一方、1task内で無制限に問題を追跡してはならない。
+
+基本:
+
+```text
+grounding
+    ↓
+implementation
+    ↓
+validation
+    ↓
+必要なら同一failure domain内のbounded fix / retest
+    ↓
+別failure domain / architecture issueへ拡大しそう
+    ↓
+STOP_AND_REPORT
+```
+
+`AGENTS.md` のinvestigation expansion guardrailを常に適用する。
+
+Codex利用枠を消費してでも「何か答えを出す」ことより、既知の安全な状態で停止し、次の判断材料を残すことを優先する。
+
+---
+
+## 10. Task result contract
+
+各 `CA-P10-*` の最終報告には少なくとも以下を含める。
+
+1. management ID
+2. groundingで確認したactual state
+3. plan / prompt assumptionとの差
+4. grounding decision
+   - `PROCEED`
+   - `ADJUST_WITHIN_SCOPE`
+   - `STOP_AND_REPORT`
+5. agent routingを実際にどうしたか
+6. files changed
+7. implementation summary
+8. validation performed
+9. validation results
+10. failures / bounded fixes
+11. remaining uncertainty
+12. architecture / security / roadmap decisionが必要か
+13. current Phase 10 completion statusへの影響
+14. next planned management ID
+15. commit / push / PR等を実施した場合はそのidentity
+
+次taskの指示文は、このactual resultをChatGPTが確認してから作成する。
+
+```text
+PHASE10_EXECUTION_PLAN.md
+        +
+previous CA-P10 actual result
+        +
+current repository / environment
+        ↓
+next Codex instruction
+```
+
+計画書の次task descriptionをそのまま無条件に再利用しない。
+
+---
+
+## 11. CA-P10-028 — Managed Execution Area
+
+### Goal
+
+Managed Execution Areaを安全に作成・識別・検証できるようにし、正常系と主要なnegative pathを同一task内で検証する。
+
+対応step: **B**
+
+### Initial expected scope
+
+- Git Bashを標準entrypointとするself-hosted management script
+- Windows固有処理をPowerShell helperへ分離
+- configurable execution root
+- initial default root候補 `C:\codex-self-hosted`
+- managed marker
+- schema version
+- execution-area identity
+- atomic state write
+- known required directory structure
+- ensure
+- preflight
+- reparse point / path safetyの必要範囲の検証
+- safe missing-directory completion
+- fail-closed behavior
+- test rootを使ったnegative-path validation
+
+### Grounding重点
+
+- repo内に既存self-hosted scripts / helpers / testsがあるか
+- current local worktreeが安全に変更可能か
+- Windows / Git Bash / PowerShell actual environment
+- `SELF_HOSTED_EXECUTION.md` の現在のmarker / state / migration rule
+
+### Main negative paths
+
+最低限、実装に対応して以下を検証する。
+
+- unmanaged existing root
+- missing marker
+- malformed marker
+- unexpected `managed_by`
+- unsupported schema
+- execution root identity / path mismatchを採用した場合の不一致
+- active / stale `current-run.json`
+- sensitive temp residue
+- Codex runtime credential residue
+- atomic-write temp residue
+- safe child directory不足
+- ensure idempotency
+- infrastructure reparse point等のpath escape
+
+### STOP
+
+runner registration、WIF、Secret、Local Codex、workspace-write、publicationへ進まない。
+
+managed-area trust model自体を変更する必要がある場合はSTOPする。
+
+### Initial recommended routing
+
+- Model: Terra
+- Reasoning: High
+- Speed: Fast
+- Parent grounding必須
+- Implementer + Tester
+- security-relevant final checkとしてIndependent Reviewerを使用
+
+---
+
+## 12. CA-P10-029 — Runner / Git Bash / Mutex / inert dispatch
+
+### Goal
+
+GitHub ActionsからWindows self-hosted runnerへcredentialなしのjobを安全にdispatchし、local execution serializationとavailability gatingの基礎を成立させる。
+
+対応step: **C + D**
+
+### Initial expected scope
+
+- runner bootstrap / registration approach
+- runner labels / eligibility
+- Git Bash execution availability
+- required basic tool discovery
+- managed execution areaとの接続
+- Windows named Mutex
+- abandoned mutex detection
+- Execution ID / current-run state integration
+- runner availability pre-check
+- online / offline / busy等の必要最小限のgate
+- inert job
+- sanitized lifecycle logging
+
+### Grounding重点
+
+- actual GitHub runner resource binding
+- caller側と`codex-automation`側のresponsibility boundary
+- Windows runner / Git Bash actual behavior
+- `CA-P10-028` actual implementation
+- GitHub-hosted precheckからself-hosted jobへのjob boundary
+
+### Completion concept
+
+credentialやCodexを使わずに:
+
+```text
+GitHub Actions
+    ↓
+availability decision
+    ↓
+self-hosted runner
+    ↓
+managed-area preflight / local lock
+    ↓
+Git Bash inert command
+    ↓
+cleanup / state completion
+```
+
+を通す。
+
+### STOP
+
+WIF / Secret / Codex executionへ進まない。
+
+runner trust / ownership / permission modelがdocumentationと食い違う場合はSTOPする。
+
+### Initial recommended routing
+
+- Model: Terra
+- Reasoning: High
+- Speed: Fast
+- Parent + Implementer + Tester
+- riskが上がった場合のみIndependent Reviewer
+
+---
+
+## 13. CA-P10-030 — Workspace / Git Bash Windows adaptation
+
+### Goal
+
+caller repositoryのautomation-managed workspace lifecycleを成立させ、既存Linux/bash中心のPhase 10資産をWindows + Git Bash上でどこまで安全に再利用できるかを確定する。
+
+対応step: **E**
+
+### Initial expected scope
+
+- controlled caller checkout / workspace
+- known base state
+- task branch preparationの既存logic再利用
+- workspace reuse / cleanup ruleの実装に必要な範囲
+- Windows path behavior
+- MSYS path conversion
+- `HOME`, `RUNNER_TEMP`, `GITHUB_WORKSPACE`等
+- `install`, `chmod`, `sha256sum`, `trap`等のactual compatibility
+- `git`, `gh` interaction
+- existing bash codeのminimal adaptation
+
+### Grounding重点
+
+ここでは「既存bashを多く再利用できる」は仮説として扱う。
+
+実際に成立しない場合、PowerShell全面移植へ勝手に切り替えずSTOPして報告する。
+
+### Completion concept
+
+credentialなしでcaller repoを既知状態へcheckout / prepare / validate / cleanupでき、後続のauth / Codexを載せられる状態にする。
+
+### Initial recommended routing
+
+- Model: Terra
+- Reasoning: High
+- Speed: Fast
+- Parent + Implementer + Tester
+
+---
+
+## 14. CA-P10-031 — WIF / Secret / isolated Local Codex read-only
+
+### Goal
+
+既存のvalidated authentication lifecycleをSelf-hosted persistent Windows hostへ適応し、isolated automation Codex runtimeからread-only Codex taskを1件通す。
+
+対応step: **F + G**
+
+### Initial expected scope
+
+- GitHub OIDC / WIF
+- caller Secret selection
+- exactly-one-enabled-version preflight
+- isolated automation Codex runtime / home
+- auth restore
+- Codex login validation
+- auth baseline / changed-state handling
+- candidate Secret persistence / adoption existing logicの適応
+- bounded credential locations
+- cleanup / residual check
+- Local Codex read-only execution
+
+### Grounding重点
+
+- existing WIF / Secret workflow implementation
+- actual self-hosted OIDC behavior
+- `CA-P10-030`で確認したGit Bash / path compatibility
+- normal user Codex runtimeを使わないこと
+- credentialのlocal authoritative stateを作らないこと
+
+### STOP
+
+workspace-write、commit、push、Draft PRへ進まない。
+
+WIF trust condition / IAM / Secret isolationのarchitecture変更が必要ならSTOPする。
+
+### Initial recommended routing
+
+- Model: Terra
+- Reasoning: High
+- Speed: Fast
+- Parent + Implementer + Tester + Independent Reviewer
+
+---
+
+## 15. CA-P10-032 — Workspace-write + trusted publication
+
+### Goal
+
+Self-hosted Local Codexにminimal controlled working-tree changeを成功させ、その結果を既存trusted validation / commit / push / Draft PR publication pathへ再接続する。
+
+対応step: **H + I**
+
+### Initial expected scope
+
+- minimal controlled workspace-write
+- CodexのGitHub credential isolation
+- Codexはworking-tree implementationのみ
+- protected-path validation
+- Git refs / config / branch / base checks
+- auth persistence completion gate
+- trusted staging
+- implementation commit
+- explicit task-branch push
+- Draft Pull Request
+- cleanup / residual-state validation
+
+### Grounding重点
+
+既存publication logicは「再利用可能なはず」という仮説としてactual workflowを読む。
+
+Linux固有処理、runner-local path、credential helper、Git behaviorに差異があれば同一security boundary内でのみ適応する。
+
+新しいpublication modelへ設計変更しない。
+
+### Completion concept
+
+安全に限定した1件で:
+
+```text
+Local Codex
+  ↓
+working-tree change
+  ↓
+trusted validation
+  ↓
+commit
+  ↓
+push
+  ↓
+Draft PR
+```
+
+を成立させる。
+
+### Initial recommended routing
+
+- Model: Terra
+- Reasoning: High
+- Speed: Fast
+- Parent + Implementer + Tester + Independent Reviewer
+
+---
+
+## 16. CA-P10-033 — Phase 10 E2E validation
+
+### Goal
+
+本来のIssue entry pointからSelf-hosted Local Codexによる実装を経てDraft Pull Requestまで通し、`ROADMAP.md` のPhase 10 completion criteriaを満たしたかを検証する。
+
+対応step: **J**
+
+### Initial expected scope
+
+- real `codex-ready` Issue entry
+- caller validation
+- availability / dispatch
+- managed-area preflight / lock
+- workspace
+- WIF / Secret / isolated Codex runtime
+- Local Codex implementation
+- authentication lifecycle
+- trusted publication
+- cleanup / residual validation
+- audit evidence
+- final roadmap criteria review
+
+### Phase completion boundary
+
+このtaskが成功しても、Codexが独自に `ROADMAP.md` をPhase 10 Completeへ変更してはならない。
+
+最終報告では:
+
+- completion criteriaごとのevidence
+- remaining uncertainty
+- Phase 10をCompleteにできる状態か
+
+を報告する。
+
+Phase status更新と次Phase開始はUserの明示判断を待つ。
+
+### Initial recommended routing
+
+- Model: Terra
+- Reasoning: High
+- Speed: Fast
+- Parent + Tester + Independent Reviewer
+- implementation fixが必要な場合のみImplementer
+
+---
+
+## 17. 計画の更新
+
+このexecution planも実装結果と矛盾したまま放置してはならない。
+
+read-only groundingまたは実装結果から、今後のtask descriptionに恒常的な修正が必要だと判明した場合:
+
+1. current taskは承認済みscope内で安全に完了できるか判断する
+2. plan変更がarchitecture / roadmap / security decisionを伴う場合はUserへ戻す
+3. 承認後、`PHASE10_EXECUTION_PLAN.md` をactual stateへ更新する
+4. 後続taskは更新後planを読む
+
+一時的な実装詳細まで逐一planへ固定する必要はない。
+
+この文書は、Phase 10中に「何を、なぜ、どの順番で、どこで止まるか」を忘れないための正本として維持する。
