@@ -9,12 +9,13 @@ Usage:
 
 Modes:
   initialize   Approve NEW_SHA as the initial workflow version.
-  stage        Approve OLD_SHA and NEW_SHA together during migration.
-  finalize     Remove OLD_SHA and retain NEW_SHA only. Requires both
+  stage        Approve retained SHA(s), OLD_SHA, and NEW_SHA together.
+  finalize     Remove OLD_SHA and retain SHA(s) plus NEW_SHA. Requires both
                --old-sha and --confirm-remove-old.
 
 Options:
   --old-sha SHA
+  --retain-sha SHA            Repeatable SHA to preserve during stage/finalize
   --pool-id ID                 Default: github
   --provider-id ID             Default: github-actions
   --workflow-identity VALUE    Default: kusa07/codex-automation/.github/workflows/codex-run.yml
@@ -67,6 +68,7 @@ PROVIDER_ID="${PROVIDER_ID:-github-actions}"
 WORKFLOW_IDENTITY="${WORKFLOW_IDENTITY:-kusa07/codex-automation/.github/workflows/codex-run.yml}"
 OLD_SHA="${OLD_SHA:-}"
 NEW_SHA="${NEW_SHA:-}"
+RETAIN_SHAS=()
 CONFIRM_REMOVE_OLD=false
 GCLOUD=()
 
@@ -79,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --workflow-identity) WORKFLOW_IDENTITY="${2:-}"; shift 2 ;;
     --old-sha) OLD_SHA="${2:-}"; shift 2 ;;
     --new-sha) NEW_SHA="${2:-}"; shift 2 ;;
+    --retain-sha) RETAIN_SHAS+=("${2:-}"); shift 2 ;;
     --confirm-remove-old) CONFIRM_REMOVE_OLD=true; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -94,14 +97,100 @@ resolve_gcloud
 [[ "$WORKFLOW_IDENTITY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$ ]] || { echo "Invalid WORKFLOW_IDENTITY." >&2; exit 2; }
 [[ "$NEW_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "NEW_SHA must be a 40-character commit SHA." >&2; exit 2; }
 
+for retain_sha in "${RETAIN_SHAS[@]}"; do
+  [[ "$retain_sha" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "RETAIN_SHA must be a 40-character commit SHA." >&2; exit 2; }
+done
+[[ "$MODE" != initialize || ${#RETAIN_SHAS[@]} -eq 0 ]] || {
+  echo "--retain-sha is supported only for stage and finalize." >&2
+  exit 2
+}
+
+validate_unique_shas() {
+  local candidate
+  local -a seen=()
+  for candidate in "$@"; do
+    [[ "$candidate" =~ ^[0-9a-fA-F]{40}$ ]] || {
+      echo "All workflow SHAs must be exactly 40 hexadecimal characters." >&2
+      exit 2
+    }
+    candidate="${candidate,,}"
+    for existing in "${seen[@]}"; do
+      [[ "$existing" != "$candidate" ]] || {
+        echo "Workflow SHAs must be duplicate-free." >&2
+        exit 2
+      }
+    done
+    seen+=("$candidate")
+  done
+}
+
+contains_sha() {
+  local wanted="${1,,}"
+  shift
+  local candidate
+  for candidate in "$@"; do
+    [[ "${candidate,,}" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+condition_for_provider() {
+  "${GCLOUD[@]}" iam workload-identity-pools providers describe "$PROVIDER_ID" \
+    --project="$PROJECT_ID" --location=global \
+    --workload-identity-pool="$POOL_ID" \
+    --format='value(attributeCondition)'
+}
+
+condition_sha_set() {
+  local condition="$1"
+  local expected_prefix="$2"
+  local expected_suffix=']'
+  [[ "$condition" == "$expected_prefix"*"$expected_suffix" ]] || {
+    echo "Current Provider condition does not match the expected owner/workflow identity." >&2
+    exit 1
+  }
+  local values="${condition#"$expected_prefix"}"
+  values="${values%"$expected_suffix"}"
+  local -a parsed=()
+  if [[ -n "$values" ]]; then
+    IFS=',' read -ra raw_values <<< "$values"
+    for raw_value in "${raw_values[@]}"; do
+      raw_value="${raw_value# }"
+      raw_value="${raw_value% }"
+      [[ "$raw_value" =~ ^\'([0-9a-fA-F]{40})\'$ ]] || {
+        echo "Current Provider condition contains an invalid workflow SHA list." >&2
+        exit 1
+      }
+      parsed+=("${BASH_REMATCH[1],,}")
+    done
+  fi
+  validate_unique_shas "${parsed[@]}"
+  printf '%s\n' "${parsed[@]}"
+}
+
+set_matches_exactly() {
+  local actual_file="$1"
+  shift
+  local -a expected=("$@")
+  mapfile -t actual < "$actual_file"
+  [[ ${#actual[@]} -eq ${#expected[@]} ]] || return 1
+  local candidate
+  for candidate in "${expected[@]}"; do
+    contains_sha "$candidate" "${actual[@]}" || return 1
+  done
+}
+
 case "$MODE" in
   initialize)
     SHA_LIST="['${NEW_SHA,,}']"
+    EXPECTED_SHAS=()
     ;;
   stage)
     [[ "$OLD_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "OLD_SHA is required for stage." >&2; exit 2; }
     [[ "${OLD_SHA,,}" != "${NEW_SHA,,}" ]] || { echo "OLD_SHA and NEW_SHA must differ." >&2; exit 2; }
-    SHA_LIST="['${OLD_SHA,,}', '${NEW_SHA,,}']"
+    validate_unique_shas "${RETAIN_SHAS[@]}" "$OLD_SHA" "$NEW_SHA"
+    TARGET_SHAS=("${RETAIN_SHAS[@]}" "${OLD_SHA,,}" "${NEW_SHA,,}")
+    EXPECTED_SHAS=("${RETAIN_SHAS[@]}" "${OLD_SHA,,}")
     ;;
   finalize)
     [[ "$OLD_SHA" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "OLD_SHA is required for finalize." >&2; exit 2; }
@@ -109,15 +198,38 @@ case "$MODE" in
       echo "finalize requires --confirm-remove-old after caller migration is verified." >&2
       exit 2
     }
-    SHA_LIST="['${NEW_SHA,,}']"
+    validate_unique_shas "${RETAIN_SHAS[@]}" "$OLD_SHA" "$NEW_SHA"
+    TARGET_SHAS=("${RETAIN_SHAS[@]}" "${NEW_SHA,,}")
+    EXPECTED_SHAS=("${RETAIN_SHAS[@]}" "$OLD_SHA" "$NEW_SHA")
     ;;
 esac
 
+if [[ "$MODE" == initialize ]]; then
+  TARGET_SHAS=("${NEW_SHA,,}")
+fi
+SHA_LIST="["
+separator=""
+for target_sha in "${TARGET_SHAS[@]}"; do
+  SHA_LIST+="${separator}'${target_sha,,}'"
+  separator=", "
+done
+SHA_LIST+="]"
+
 ATTRIBUTE_CONDITION="assertion.repository_owner_id == '${TRUSTED_OWNER_ID}' && assertion.job_workflow_ref.startsWith('${WORKFLOW_IDENTITY}@') && assertion.job_workflow_sha in ${SHA_LIST}"
 
-"${GCLOUD[@]}" iam workload-identity-pools providers describe "$PROVIDER_ID" \
-  --project="$PROJECT_ID" --location=global \
-  --workload-identity-pool="$POOL_ID" >/dev/null
+CURRENT_CONDITION="$(condition_for_provider)"
+EXPECTED_PREFIX="assertion.repository_owner_id == '${TRUSTED_OWNER_ID}' && assertion.job_workflow_ref.startsWith('${WORKFLOW_IDENTITY}@') && assertion.job_workflow_sha in ["
+CURRENT_SHA_FILE="$(mktemp)"
+trap 'rm -f -- "$CURRENT_SHA_FILE"' EXIT
+if [[ "$MODE" == initialize ]]; then
+  condition_sha_set "$CURRENT_CONDITION" "$EXPECTED_PREFIX" > "$CURRENT_SHA_FILE"
+else
+  condition_sha_set "$CURRENT_CONDITION" "$EXPECTED_PREFIX" > "$CURRENT_SHA_FILE"
+  set_matches_exactly "$CURRENT_SHA_FILE" "${EXPECTED_SHAS[@]}" || {
+    echo "Current Provider condition SHA set does not match the expected pre-update set." >&2
+    exit 1
+  }
+fi
 
 echo "Updating approved workflow SHA condition in mode: $MODE"
 "${GCLOUD[@]}" iam workload-identity-pools providers update-oidc "$PROVIDER_ID" \
@@ -125,6 +237,15 @@ echo "Updating approved workflow SHA condition in mode: $MODE"
   --location=global \
   --workload-identity-pool="$POOL_ID" \
   --attribute-condition="$ATTRIBUTE_CONDITION"
+
+UPDATED_CONDITION="$(condition_for_provider)"
+UPDATED_SHA_FILE="$(mktemp)"
+trap 'rm -f -- "${CURRENT_SHA_FILE:-}" "${UPDATED_SHA_FILE}"' EXIT
+condition_sha_set "$UPDATED_CONDITION" "$EXPECTED_PREFIX" > "$UPDATED_SHA_FILE"
+set_matches_exactly "$UPDATED_SHA_FILE" "${TARGET_SHAS[@]}" || {
+  echo "Updated Provider condition SHA set does not match the exact target set." >&2
+  exit 1
+}
 
 case "$MODE" in
   initialize) echo "Initial workflow SHA approved." ;;
