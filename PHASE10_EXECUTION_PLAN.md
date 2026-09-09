@@ -92,7 +92,7 @@ Validate self-hosted Codex read-only workflow
 
 WIF / Secret / isolated Local Codex read-only executionは **CA-P10-030のapproved scope内** である。これらをscope外とする旧記述は使用しない。一方、workspace-write、commit、push、Draft Pull Request、publicationは引き続きCA-P10-032以降のscopeであり、CA-P10-030では開始しない。
 
-`CA-P10-030_001` はdocumentation-only current-state syncである。`CA-P10-030_002` はstartup failure grounding / caller permission fix / job-generation checkpointを完了したSTOP resultである。同期後の次の実作業は `CA-P10-030_003` とし、既存runnerのavailabilityをgroundingし、registration / trust / identityを変更せず安全にrestore可能な場合のみfresh real-system validationを継続する。
+`CA-P10-030_001` はdocumentation-only current-state syncである。`CA-P10-030_002` はstartup failure grounding / caller permission fix / job-generation checkpointを完了したSTOP resultである。`CA-P10-030_003` は既存interactive runnerをregistration / trust / identityを変更せずonlineへrestoreし、fresh validation `34349242750` がrunner pickupまで到達したことを確認した。しかしWindows runnerがWSL `bash.exe` を解決してGit Bash向けtemp script pathを読めず、Stage Aで停止した。Git Bash explicit-shell fixはapproved scope内だが、新しいreusable workflow SHAを実行するにはcurrent WIF approved-SHA conditionの変更が必要なため、本taskでは変更せずSTOPする。
 
 ---
 
@@ -159,7 +159,7 @@ Core work unitの実装結果を安全に着地させる、execution planをactu
 | `CA-P10-029_002_003` | Stage D availability validation + Independent Reviewer + CA-P10-029 completion | Complete |
 | `CA-P10-030_001` | CA-P10-030の着地済み実装・caller・startup_failureをauthoritative execution planへ同期 | Complete |
 | `CA-P10-030_002` | startup_failure grounding / caller permission fix / job-generation checkpoint。既存runner offlineによりSTOP | STOP |
-| `CA-P10-030_003` | existing runner availability grounding / safe restoration / fresh E + F + G validation | Next |
+| `CA-P10-030_003` | existing runner availability restored; fresh validation reached Stage A, then WSL `bash.exe` path failure. New workflow SHA would require WIF condition change, so STOP | STOP |
 
 補助・分割管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
@@ -788,7 +788,7 @@ jobs:     self-hosted validation generated / hosted connectivity skipped
 
 The caller permission ceiling now satisfies GitHub's reusable-workflow validation while the actual self-hosted validation job remains job-level downscoped to `contents: read` and `id-token: write`. WIF / Secret / Local Codex logic was not reached. The existing runner `codex-automation-windows-01` was observed offline, so `CA-P10-030_002` stopped after cancelling the queued run. `CA-P10-030` remains In progress.
 
-`CA-P10-030_003` is the next real work unit. It must ground the existing runner and may only restore its availability without changing registration, trust, identity, or architecture before dispatching a fresh validation.
+`CA-P10-030_003` restored the existing interactive runner without changing registration, trust, identity, or labels. Fresh validation run `34349242750` was picked up by that runner but failed in `Verify runner and caller baseline`: the runner resolved `bash` to WSL `C:\Windows\System32\bash.exe`, which could not read the Windows workflow temp-script path. WIF / Secret / Local Codex was not reached. An explicit Git Bash invocation is a bounded Windows compatibility fix, but its resulting new reusable-workflow SHA is not in the current WIF approved-SHA condition. Updating that condition is a trust-boundary change and remains outside this task; CA-P10-030 therefore remains In progress pending explicit authority.
 
 ### Goal
 
