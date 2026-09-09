@@ -74,14 +74,25 @@ Mark CA-P10-029 complete
 
 `ROADMAP.md` のPhase 10 statusは引き続き `Next` のままとする。
 
-次の実作業は:
+`CA-P10-030` は **In progress** であり、E + F + Gを統合したapproved scopeの実装がauthoritative `main`へ着地済みである。
 
 ```text
-CA-P10-030
-Integrated workspace lifecycle + authentication + Local Codex read-only
+1faacb09f24d9ed0fee6a602edafc6fb51eafb32
+Implement self-hosted Codex read-only validation
 ```
 
-である。WIF / Secret / Codex executionへはまだ進まない。
+caller `kusa07/interest-gacha` には以下が着地済みである。
+
+```text
+5da586a15a5a7eeda70f6bcf9e8e04811b40ab04
+Validate self-hosted Codex read-only workflow
+```
+
+このcallerから実行した `Self-hosted Codex read-only validation` run `34290401358` は `startup_failure` で終了し、jobは1件も開始されていない。したがって、CA-P10-030のreal-system validationは未完了であり、CA-P10-030をCompleteとは判定しない。
+
+WIF / Secret / isolated Local Codex read-only executionは **CA-P10-030のapproved scope内** である。これらをscope外とする旧記述は使用しない。一方、workspace-write、commit、push、Draft Pull Request、publicationは引き続きCA-P10-032以降のscopeであり、CA-P10-030では開始しない。
+
+本current-state syncを `CA-P10-030_001` とする。同期後の次の実作業は `CA-P10-030_002` とし、着地済み実装から継続して `startup_failure` をgrounding・調査し、同一failure domain内で安全な場合のみbounded fix / retestを行い、CA-P10-030 completionを判定する。
 
 ---
 
@@ -96,7 +107,7 @@ Phase 10の作業塊と現在地は以下とする。
 
 作業塊 2: 既存資産をSelf-hostedへ載せる
     E + F + G
-    Next: CA-P10-030 (E + F + G)
+    In progress: CA-P10-030 (E + F + G)
 
 作業塊 3: Write + Publication
     H + I
@@ -121,7 +132,7 @@ Phase 10は、現時点では以下の5つのcore work unitで進める。
 |---|---|---|---|---|---|
 | `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 | Complete / landed |
 | `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Complete |
-| `CA-P10-030` | E + F + G | 2 | Workspace lifecycle + Windows/Git Bash adaptation + WIF/Secret + isolated Local Codex read-only | 重 | Next |
+| `CA-P10-030` | E + F + G | 2 | Workspace lifecycle + Windows/Git Bash adaptation + WIF/Secret + isolated Local Codex read-only | 重 | In progress |
 | `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Planned |
 | `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Planned |
 
@@ -146,6 +157,8 @@ Core work unitの実装結果を安全に着地させる、execution planをactu
 | `CA-P10-029_002` | CA-P10-029の残り全体: local execution control完成 + runner登録/binding + inert dispatch + availability/integration validation | Complete (finalized by `CA-P10-029_002_003`) |
 | `CA-P10-029_002_002` | `029_002`をStage A〜Dのremaining work全体へ拡張する承認を本計画へ同期 | Complete |
 | `CA-P10-029_002_003` | Stage D availability validation + Independent Reviewer + CA-P10-029 completion | Complete |
+| `CA-P10-030_001` | CA-P10-030の着地済み実装・caller・startup_failureをauthoritative execution planへ同期 | Complete |
+| `CA-P10-030_002` | 着地済みread-only実装から継続し、startup_failure grounding / bounded fix / retest / completion判定 | Next |
 
 補助・分割管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
@@ -729,7 +742,36 @@ public repositoryへのunsafe runner exposure、long-lived PAT追加、broad per
 
 ### Status
 
-**Next**
+**In progress / implementation landed; real-system validation pending**
+
+### Current landed state
+
+`codex-automation` implementation landed at:
+
+```text
+1faacb09f24d9ed0fee6a602edafc6fb51eafb32
+Implement self-hosted Codex read-only validation
+```
+
+caller `kusa07/interest-gacha` validation wiring landed at:
+
+```text
+5da586a15a5a7eeda70f6bcf9e8e04811b40ab04
+Validate self-hosted Codex read-only workflow
+```
+
+The latest real-system validation observed for this landed state is:
+
+```text
+workflow: Self-hosted Codex read-only validation
+run id:   34290401358
+result:   startup_failure
+jobs:     0
+```
+
+This means the integrated implementation is landed, but the GitHub Actions run failed before any job started. Treat `startup_failure` as the current validation boundary, not as evidence that WIF / Secret / Local Codex logic itself failed. The continuation must first ground the startup failure and may apply only bounded fixes within the approved CA-P10-030 failure domain.
+
+`CA-P10-030_001` is the documentation-only current-state sync. The next real work unit is `CA-P10-030_002`.
 
 ### Goal
 
