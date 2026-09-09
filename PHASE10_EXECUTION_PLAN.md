@@ -88,11 +88,11 @@ caller `kusa07/interest-gacha` には以下が着地済みである。
 Validate self-hosted Codex read-only workflow
 ```
 
-このcallerから実行した `Self-hosted Codex read-only validation` run `34290401358` は `startup_failure` で終了し、jobは1件も開始されていない。したがって、CA-P10-030のreal-system validationは未完了であり、CA-P10-030をCompleteとは判定しない。
+`CA-P10-030_002` は、caller permission ceilingのbounded fixにより `startup_failure` を解消した。`Self-hosted Codex read-only validation` run `34346872340` はself-hosted validation jobを生成したが、既存runnerがofflineのためpickup前にcancelledとなった。したがって、CA-P10-030のreal-system validationは未完了であり、CA-P10-030をCompleteとは判定しない。
 
 WIF / Secret / isolated Local Codex read-only executionは **CA-P10-030のapproved scope内** である。これらをscope外とする旧記述は使用しない。一方、workspace-write、commit、push、Draft Pull Request、publicationは引き続きCA-P10-032以降のscopeであり、CA-P10-030では開始しない。
 
-本current-state syncを `CA-P10-030_001` とする。同期後の次の実作業は `CA-P10-030_002` とし、着地済み実装から継続して `startup_failure` をgrounding・調査し、同一failure domain内で安全な場合のみbounded fix / retestを行い、CA-P10-030 completionを判定する。
+`CA-P10-030_001` はdocumentation-only current-state syncである。`CA-P10-030_002` はstartup failure grounding / caller permission fix / job-generation checkpointを完了したSTOP resultである。同期後の次の実作業は `CA-P10-030_003` とし、既存runnerのavailabilityをgroundingし、registration / trust / identityを変更せず安全にrestore可能な場合のみfresh real-system validationを継続する。
 
 ---
 
@@ -158,7 +158,8 @@ Core work unitの実装結果を安全に着地させる、execution planをactu
 | `CA-P10-029_002_002` | `029_002`をStage A〜Dのremaining work全体へ拡張する承認を本計画へ同期 | Complete |
 | `CA-P10-029_002_003` | Stage D availability validation + Independent Reviewer + CA-P10-029 completion | Complete |
 | `CA-P10-030_001` | CA-P10-030の着地済み実装・caller・startup_failureをauthoritative execution planへ同期 | Complete |
-| `CA-P10-030_002` | 着地済みread-only実装から継続し、startup_failure grounding / bounded fix / retest / completion判定 | Next |
+| `CA-P10-030_002` | startup_failure grounding / caller permission fix / job-generation checkpoint。既存runner offlineによりSTOP | STOP |
+| `CA-P10-030_003` | existing runner availability grounding / safe restoration / fresh E + F + G validation | Next |
 
 補助・分割管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
@@ -760,7 +761,7 @@ caller `kusa07/interest-gacha` validation wiring landed at:
 Validate self-hosted Codex read-only workflow
 ```
 
-The latest real-system validation observed for this landed state is:
+The initial real-system validation observed for this landed state was:
 
 ```text
 workflow: Self-hosted Codex read-only validation
@@ -769,9 +770,25 @@ result:   startup_failure
 jobs:     0
 ```
 
-This means the integrated implementation is landed, but the GitHub Actions run failed before any job started. Treat `startup_failure` as the current validation boundary, not as evidence that WIF / Secret / Local Codex logic itself failed. The continuation must first ground the startup failure and may apply only bounded fixes within the approved CA-P10-030 failure domain.
+`CA-P10-030_002` resolved this startup failure by updating the caller permission ceiling at:
 
-`CA-P10-030_001` is the documentation-only current-state sync. The next real work unit is `CA-P10-030_002`.
+```text
+ad15cdb47010fdfde7dfd01f9b56a7a0bc783a4d
+Fix self-hosted validation permissions
+```
+
+The post-fix checkpoint was:
+
+```text
+workflow: Self-hosted Codex read-only validation
+run id:   34346872340
+result:   cancelled before runner pickup
+jobs:     self-hosted validation generated / hosted connectivity skipped
+```
+
+The caller permission ceiling now satisfies GitHub's reusable-workflow validation while the actual self-hosted validation job remains job-level downscoped to `contents: read` and `id-token: write`. WIF / Secret / Local Codex logic was not reached. The existing runner `codex-automation-windows-01` was observed offline, so `CA-P10-030_002` stopped after cancelling the queued run. `CA-P10-030` remains In progress.
+
+`CA-P10-030_003` is the next real work unit. It must ground the existing runner and may only restore its availability without changing registration, trust, identity, or architecture before dispatching a fresh validation.
 
 ### Goal
 
