@@ -94,6 +94,8 @@ WIF / Secret / isolated Local Codex read-only executionは **CA-P10-030のapprov
 
 `CA-P10-030_001` はdocumentation-only current-state syncである。`CA-P10-030_002` はstartup failure grounding / caller permission fix / job-generation checkpointを完了したSTOP resultである。`CA-P10-030_003` は既存interactive runnerをregistration / trust / identityを変更せずonlineへrestoreし、fresh validation `34349242750` がrunner pickupまで到達したことを確認した。しかしWindows runnerがWSL `bash.exe` を解決してGit Bash向けtemp script pathを読めず、Stage Aで停止した。Git Bash explicit-shell fixはapproved scope内だが、新しいreusable workflow SHAを実行するにはcurrent WIF approved-SHA conditionの変更が必要なため、本taskでは変更せずSTOPする。
 
+`CA-P10-030_004` は、Git Bash explicit-shell fixと一回限りのWIF approved-workflow-SHA staged migrationについて明示認可を受けてGate 1を実施した。source remote `5fda825004dab695bb6b4043a4fcf5c6736a954a`、caller remote `ad15cdb47010fdfde7dfd01f9b56a7a0bc783a4d`、existing runner `codex-automation-windows-01` online / idle、Git for Windows Bash `C:\Program Files\Git\bin\bash.exe`を確認した。run `34349242750` はWSL `C:\Windows\System32\bash.exe`によるWindows temp-script path failureで、WIF前に停止したことを再確認した。しかしlive WIF Providerのapproved SHA setは `1faacb09f24d9ed0fee6a602edafc6fb51eafb32` に加え、未退役の `1c146e847eaa03bb1568991459feacbf443ef74d` と `9f9c7b8d907cbf4017bea1feb7864b65ee14621b` を含んでいた。owner restrictionとworkflow identityは維持されていたが、既存rotation scriptのstageは指定したSHA集合で条件を置換する。よってauthorized `OLD -> OLD + NEW` stageは追加2 SHAを無根拠に削除し、保持は単一移行前提と矛盾する。追加SHAのcaller利用状況・承認根拠・退役方針についてsecurity decisionが得られるまで、Provider / workflow / caller / runnerへの変更、dispatch、WIF stage/finalizeは行わない。CA-P10-030はIn progress、Phase 10はNextのままとする。
+
 ---
 
 ## 3. Phase 10 全体の作業塊
@@ -160,6 +162,7 @@ Core work unitの実装結果を安全に着地させる、execution planをactu
 | `CA-P10-030_001` | CA-P10-030の着地済み実装・caller・startup_failureをauthoritative execution planへ同期 | Complete |
 | `CA-P10-030_002` | startup_failure grounding / caller permission fix / job-generation checkpoint。既存runner offlineによりSTOP | STOP |
 | `CA-P10-030_003` | existing runner availability restored; fresh validation reached Stage A, then WSL `bash.exe` path failure. New workflow SHA would require WIF condition change, so STOP | STOP |
+| `CA-P10-030_004` | authorized Git Bash fix / one-time WIF SHA migrationのGate 1。live Providerに`1faacb09f24d9ed0fee6a602edafc6fb51eafb32`以外の未退役SHAが2件あり、単一移行前提とmaterialに不一致のためProvider・workflow・caller無変更でSTOP | STOP |
 
 補助・分割管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
