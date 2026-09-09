@@ -1636,6 +1636,9 @@ jobs:
           }
           [[ "${CALLER_REPOSITORY_NAME}" =~ ^[A-Za-z0-9._-]+$ ]] || exit 1
           mapfile -t enabled_versions < <(gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --filter='state=ENABLED' --format='value(name.basename())')
+          for index in "${!enabled_versions[@]}"; do
+            enabled_versions[index]="${enabled_versions[index]%$'\r'}"
+          done
           [[ ${#enabled_versions[@]} -eq 1 && "${enabled_versions[0]}" =~ ^[1-9][0-9]*$ ]] || {
             echo "Expected exactly one enabled authentication version" >&2
             exit 1
