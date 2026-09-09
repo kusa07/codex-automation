@@ -39,6 +39,14 @@ if [[ "$action" == run ]]; then
   if (( inert )); then common+=(-Inert)
   elif [[ -n "$command_path" ]]; then common+=(-PayloadPath "$command_path")
   else printf 'run requires --inert or --payload-path\n' >&2; exit 64; fi
-  if ((${#args[@]})); then common+=(-PayloadArgument); common+=("${args[@]}"); fi
+  payload_env_prefix=""
+  if ((${#args[@]})); then
+    payload_env_prefix="CODEX_LOCAL_EXECUTION_PAYLOAD_${BASHPID}_${RANDOM}_"
+    for index in "${!args[@]}"; do
+      payload_env_name="${payload_env_prefix}${index}"
+      export "${payload_env_name}=${args[index]}"
+    done
+  fi
+  common+=(-PayloadArgumentCount "${#args[@]}" -PayloadArgumentPrefix "$payload_env_prefix")
 fi
 exec "$powershell_bin" "${common[@]}"

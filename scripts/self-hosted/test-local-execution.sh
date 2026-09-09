@@ -17,7 +17,7 @@ fi
 grep -qx 'EXECUTION_FINISHED' "$normal_log"
 "${script_dir}/manage-execution-area.sh" preflight >/dev/null
 busy_root="${test_root}-busy"; export CODEX_AUTOMATION_ROOT="$busy_root"; "${script_dir}/manage-execution-area.sh" ensure >/dev/null
-"$entrypoint" run --repository-id 123 --run-id 200 --attempt 1 --payload-path ping.exe --payload-arg 127.0.0.1 >/dev/null &
+"$entrypoint" run --repository-id 123 --run-id 200 --attempt 1 --payload-path ping.exe --payload-arg -n --payload-arg 1 --payload-arg 127.0.0.1 >/dev/null &
 holder=$!; sleep 0.5
 if "$entrypoint" run --repository-id 123 --run-id 201 --attempt 1 --inert >/dev/null 2>&1; then kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true; printf 'busy execution was not rejected\n' >&2; exit 1; fi
 wait "$holder"; "${script_dir}/manage-execution-area.sh" preflight >/dev/null

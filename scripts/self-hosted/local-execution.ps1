@@ -7,6 +7,8 @@ param(
     [string]$GithubRunAttempt,
     [string]$PayloadPath,
     [string[]]$PayloadArgument = @(),
+    [int]$PayloadArgumentCount = 0,
+    [string]$PayloadArgumentPrefix,
     [switch]$Inert
 )
 Set-StrictMode -Version Latest
@@ -33,7 +35,24 @@ function Assert-MutexAcl([System.Threading.Mutex]$Mutex) {
 }
 function Open-OrCreateMutex([string]$Name, [ref]$Created) { $mutex = $null; try { $security = New-MutexSecurity; $Created.Value = $false; $mutex = [System.Threading.Mutex]::new($false, $Name, [ref]$Created.Value, $security); Assert-MutexAcl $mutex; return $mutex } catch [System.Management.Automation.MethodException] { if ($null -ne $mutex) { $mutex.Dispose() }; Fail 'explicit MutexSecurity constructor is unavailable; refusing weaker ACL fallback' } catch { if ($null -ne $mutex) { $mutex.Dispose() }; Fail 'explicit Mutex ACL setup failed' } }
 function Write-AtomicJson([string]$Path, [object]$Object) { $directory = Split-Path -Parent $Path; $leaf = Split-Path -Leaf $Path; $temp = Join-Path $directory (".{0}.{1}.tmp" -f $leaf, ([guid]::NewGuid().ToString('N'))); try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes((($Object | ConvertTo-Json -Compress -Depth 5) + "`n")); $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough); try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }; if (Test-Path -LiteralPath $Path) { Fail 'current-run state appeared during atomic create' }; [IO.File]::Move($temp, $Path) } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue } } }
-function Invoke-CommandPayload { if ($Inert) { return 0 }; if ([string]::IsNullOrWhiteSpace($PayloadPath)) { Fail 'payload path is required unless inert' }; $resolved = $PayloadPath; if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { try { $resolved = (Get-Command -Name $PayloadPath -CommandType Application -ErrorAction Stop).Source } catch { Fail 'payload path is missing' } }; & $resolved @PayloadArgument | Out-Host; $exitCode = $LASTEXITCODE; return [int]$exitCode }
+function Resolve-PayloadArguments {
+    if ($PayloadArgumentCount -lt 0) { Fail 'payload argument count is invalid' }
+    if ($PayloadArgumentCount -eq 0) {
+        if (-not [string]::IsNullOrEmpty($PayloadArgumentPrefix)) { Fail 'payload argument prefix is invalid for an empty argument list' }
+        return @($PayloadArgument)
+    }
+    if ([string]::IsNullOrEmpty($PayloadArgumentPrefix) -or $PayloadArgumentPrefix -notmatch '^[A-Za-z_][A-Za-z0-9_]*_$') { Fail 'payload argument prefix is invalid' }
+    $resolved = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $PayloadArgumentCount; $index++) {
+        $name = "$PayloadArgumentPrefix$index"
+        $value = [Environment]::GetEnvironmentVariable($name, [EnvironmentVariableTarget]::Process)
+        if ($null -eq $value) { Fail "payload argument $index is missing" }
+        [Environment]::SetEnvironmentVariable($name, $null, [EnvironmentVariableTarget]::Process)
+        [void]$resolved.Add($value)
+    }
+    return $resolved.ToArray()
+}
+function Invoke-CommandPayload { if ($Inert) { return 0 }; if ([string]::IsNullOrWhiteSpace($PayloadPath)) { Fail 'payload path is required unless inert' }; $arguments = Resolve-PayloadArguments; $resolved = $PayloadPath; if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { try { $resolved = (Get-Command -Name $PayloadPath -CommandType Application -ErrorAction Stop).Source } catch { Fail 'payload path is missing' } }; & $resolved @arguments | Out-Host; $exitCode = $LASTEXITCODE; return [int]$exitCode }
 $fullRoot = Get-FullDirectory $Root
 if ($Action -eq 'preflight') { Invoke-AreaPreflight $fullRoot; Write-Output 'PREFLIGHT_PASSED'; exit 0 }
 $executionId = Get-ExecutionId
