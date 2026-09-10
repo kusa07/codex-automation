@@ -2034,7 +2034,7 @@ jobs:
           PAYLOAD
           chmod 700 -- "${CODEX_PAYLOAD_FILE}"
           printf '%s\n' 'WRITE_STAGE=payload_launch'
-          if "${automation_source}/scripts/self-hosted/run-local-execution.sh" run --repository-id "${GITHUB_REPOSITORY_ID}" --run-id "${GITHUB_RUN_ID}" --attempt "${GITHUB_RUN_ATTEMPT}" --payload-path "C:/Program Files/Git/bin/bash.exe" --payload-arg "$(cygpath -aw "${automation_source}")" --payload-arg "$(cygpath -aw "${caller_source}")" --payload-arg "${WORKSPACE_NAME}" --payload-arg "${EXECUTION_ID}" --payload-arg "$(git -C "${caller_source}" rev-parse HEAD)" --payload-arg "${CODEX_RESULT_FILE}" --payload-arg "$(cygpath -aw "${expected_file}")"; then
+          if "${automation_source}/scripts/self-hosted/run-local-execution.sh" run --repository-id "${GITHUB_REPOSITORY_ID}" --run-id "${GITHUB_RUN_ID}" --attempt "${GITHUB_RUN_ATTEMPT}" --payload-path "C:/Program Files/Git/bin/bash.exe" --payload-arg "$(cygpath -aw "${CODEX_PAYLOAD_FILE}")" --payload-arg "$(cygpath -aw "${automation_source}")" --payload-arg "$(cygpath -aw "${caller_source}")" --payload-arg "${WORKSPACE_NAME}" --payload-arg "${EXECUTION_ID}" --payload-arg "$(git -C "${caller_source}" rev-parse HEAD)" --payload-arg "${CODEX_RESULT_FILE}" --payload-arg "$(cygpath -aw "${expected_file}")"; then
             [[ -f "${PAYLOAD_STATUS_FILE}" && "$(<"${PAYLOAD_STATUS_FILE}")" == PASS ]]
           else
             exit $?
