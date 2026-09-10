@@ -1975,7 +1975,9 @@ jobs:
           git -C "${workspace_path}" switch --create "${task_branch}" "${base_sha}"
           printf '%s\n' 'WRITE_STAGE=branch_setup_complete'
           expected_refs_hash="$(git -C "${workspace_path}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1)"
-          expected_config_hash="$(sha256sum "$(git -C "${workspace_path}" rev-parse --git-path config)" | cut -d ' ' -f 1)"
+          git_config_path="$(git -C "${workspace_path}" rev-parse --path-format=absolute --git-path config)"
+          [[ -f "${git_config_path}" ]] || exit 1
+          expected_config_hash="$(sha256sum "${git_config_path}" | cut -d ' ' -f 1)"
           expected_path="ca-p10-032-validation/validation-${GITHUB_RUN_ID}.txt"
           [[ ! -e "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]] || exit 1
           expected_content="$(<"${expected_file}")"
@@ -1989,7 +1991,7 @@ jobs:
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_start'
           [[ "$(git -C "${workspace_path}" symbolic-ref --short HEAD)" == "${task_branch}" ]]
           [[ "$(git -C "${workspace_path}" rev-parse HEAD)" == "${base_sha}" ]]
-          [[ "$(sha256sum "$(git -C "${workspace_path}" rev-parse --git-path config)" | cut -d ' ' -f 1)" == "${expected_config_hash}" ]]
+          [[ "$(sha256sum "${git_config_path}" | cut -d ' ' -f 1)" == "${expected_config_hash}" ]]
           [[ "$(git -C "${workspace_path}" remote get-url origin)" == "${origin_url}" ]]
           [[ "$(git -C "${workspace_path}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1)" == "${expected_refs_hash}" ]]
           changed_paths=()
