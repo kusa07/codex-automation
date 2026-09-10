@@ -20,11 +20,16 @@ on:
         required: false
         default: false
         type: boolean
+      workspace_write_validation_mode:
+        description: Run the bounded self-hosted workspace-write and trusted-publication validation path
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   connectivity-test:
     name: Test direct WIF and Secret access
-    if: ${{ inputs.validation_mode != true }}
+    if: ${{ inputs.validation_mode != true && inputs.workspace_write_validation_mode != true }}
     runs-on: ubuntu-latest
     concurrency:
       group: codex-${{ github.repository_id }}
@@ -1455,7 +1460,7 @@ jobs:
 
   self-hosted-read-only-validation:
     name: Self-hosted isolated Local Codex read-only validation
-    if: ${{ inputs.validation_mode == true }}
+    if: ${{ inputs.validation_mode == true && inputs.workspace_write_validation_mode != true }}
     runs-on: [self-hosted, Windows, X64, codex-automation]
     concurrency:
       group: codex-${{ github.repository_id }}
@@ -1764,5 +1769,261 @@ jobs:
             exit 1
           fi
           echo "Self-hosted read-only validation cleanup passed"
+
+  self-hosted-workspace-write-validation:
+    name: Self-hosted controlled workspace-write and trusted publication validation
+    if: ${{ inputs.workspace_write_validation_mode == true && inputs.validation_mode != true }}
+    runs-on: [self-hosted, Windows, X64, codex-automation]
+    concurrency:
+      group: codex-${{ github.repository_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    env:
+      CALLER_REPOSITORY_NAME: ${{ github.event.repository.name }}
+      GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
+      WORKLOAD_IDENTITY_PROVIDER: ${{ inputs.workload_identity_provider }}
+      CONNECTIVITY_SECRET_ID: codex-auth-${{ github.event.repository.name }}
+      CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
+      CODEX_HOME: C:/codex-self-hosted/codex-home
+      CODEX_VERSION: 0.148.0
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: C:\PROGRA~1\Git\bin\bash.exe --noprofile --norc -e -o pipefail "{0}"
+    steps:
+      - name: Checkout caller repository without persisted credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          path: caller-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout immutable automation helpers without persisted credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: automation-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify runner and caller baseline
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          caller_source="${GITHUB_WORKSPACE}/caller-source"
+          [[ "$(git -C "${caller_source}" remote get-url origin)" == *"${GITHUB_REPOSITORY}"* ]] || exit 1
+          [[ -z "$(git -C "${caller_source}" status --porcelain=v1 --untracked-files=all)" ]] || exit 1
+          command -v powershell.exe >/dev/null 2>&1
+          command -v bash >/dev/null 2>&1
+          command -v git >/dev/null 2>&1
+          echo "Self-hosted runner and caller baseline validated"
+
+      - name: Verify immutable automation source
+        env:
+          EXPECTED_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          EXPECTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_WORKFLOW_REPOSITORY}" == "kusa07/codex-automation" ]] || exit 1
+          actual_source_origin="$(git -C "${GITHUB_WORKSPACE}/automation-source" remote get-url origin)"
+          actual_source_origin="${actual_source_origin%.git}"
+          case "${actual_source_origin}" in
+            https://github.com/kusa07/codex-automation|git@github.com:kusa07/codex-automation) ;;
+            *) exit 1 ;;
+          esac
+          [[ "$(git -C "${GITHUB_WORKSPACE}/automation-source" rev-parse HEAD)" == "${EXPECTED_WORKFLOW_SHA}" ]] || exit 1
+
+      - name: Ensure managed execution area
+        run: |
+          set -euo pipefail
+          script_dir="${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted"
+          "${script_dir}/manage-execution-area.sh" ensure
+          "${script_dir}/manage-execution-area.sh" preflight
+
+      - name: Authenticate to Google Cloud with direct WIF
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          workload_identity_provider: ${{ inputs.workload_identity_provider }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          version: ">= 363.0.0"
+
+      - name: Move Google credentials outside the caller workspace
+        run: |
+          set -euo pipefail
+          umask 077
+          caller_source="${GITHUB_WORKSPACE}/caller-source"
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" && "${GOOGLE_GHA_CREDS_PATH}" == "${caller_source}"/* ]]; then exit 1; fi
+          if [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" && -f "${GOOGLE_GHA_CREDS_PATH}" ]]; then
+            relocated_credentials="${RUNNER_TEMP}/codex-google-credentials.json"
+            install -m 600 -- "${GOOGLE_GHA_CREDS_PATH}" "${relocated_credentials}"
+            rm -f -- "${GOOGLE_GHA_CREDS_PATH}"
+            {
+              printf 'GOOGLE_GHA_CREDS_PATH=%s\n' "${relocated_credentials}"
+              printf 'GOOGLE_APPLICATION_CREDENTIALS=%s\n' "${relocated_credentials}"
+              printf 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=%s\n' "${relocated_credentials}"
+            } >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run Local Codex workspace-write and trusted publication under Mutex
+        env:
+          CODEX_RESULT_FILE: ${{ runner.temp }}/codex-write-result.txt
+          CODEX_PAYLOAD_FILE: ${{ runner.temp }}/codex-write-payload.sh
+          CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
+          AUTHORITATIVE_VERSION_FILE: ${{ runner.temp }}/codex-authoritative-version.txt
+          PAYLOAD_STATUS_FILE: ${{ runner.temp }}/codex-write-payload.status
+          WORKSPACE_NAME: codex-workspace-write-${{ github.run_id }}-${{ github.run_attempt }}
+          EXECUTION_ID: repo-${{ github.repository_id }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          caller_source="${GITHUB_WORKSPACE}/caller-source"
+          automation_source="${GITHUB_WORKSPACE}/automation-source"
+          task_file="${RUNNER_TEMP}/codex-write-task.md"
+          stderr_file="${RUNNER_TEMP}/codex-write.stderr"
+          auth_hash_file="${RUNNER_TEMP}/codex-write-auth-before.sha256"
+          expected_file="${RUNNER_TEMP}/codex-write-expected.txt"
+          printf '%s\n' "CA-P10-032 workspace-write validation run ${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}" > "${expected_file}"
+          cat > "${CODEX_PAYLOAD_FILE}" <<'PAYLOAD'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          automation_source="$(cygpath -u -- "$1")"
+          caller_source="$(cygpath -aw -- "$2")"
+          workspace_name="$3"
+          execution_id="$4"
+          base_sha="$5"
+          result_file="$(cygpath -u -- "$6")"
+          expected_file="$(cygpath -u -- "$7")"
+          managed_root="$(cygpath -u -- "${CODEX_AUTOMATION_ROOT}")"
+          workspace_path="${managed_root}/workspaces/${workspace_name}"
+          codex_home="${managed_root}/codex-home/${workspace_name}"
+          runner_temp="$(cygpath -u -- "${RUNNER_TEMP}")"
+          secret_file="$(cygpath -u -- "${CONNECTIVITY_SECRET_FILE}")"
+          version_file="$(cygpath -u -- "${AUTHORITATIVE_VERSION_FILE}")"
+          task_file="${runner_temp}/codex-write-task.md"
+          stderr_file="${runner_temp}/codex-write.stderr"
+          auth_hash_file="${runner_temp}/codex-write-auth-before.sha256"
+          askpass_file="${runner_temp}/codex-write-askpass.sh"
+          cli_prefix="${runner_temp}/codex-cli-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          final_sha=""
+          prepared=0
+          cleanup() {
+            status=$?
+            if cd -- "${automation_source}" && (( prepared )); then
+              cleanup_args=(cleanup --active-run --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" --workspace-name "${workspace_name}" --execution-id "${execution_id}")
+              [[ -z "${final_sha}" ]] || cleanup_args+=(--expected-final-sha "${final_sha}")
+              "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" "${cleanup_args[@]}" >/dev/null || status=1
+            else
+              status=1
+            fi
+            rm -f -- "${secret_file}" "${version_file}" "${auth_hash_file}" "${stderr_file}" "${task_file}" "${askpass_file}" "${result_file}"
+            rm -rf -- "${cli_prefix}"
+            rm -rf -- "${codex_home}"
+            [[ ! -e "${cli_prefix}" ]] || status=1
+            [[ ! -e "${codex_home}" ]] || status=1
+            exit "${status}"
+          }
+          trap cleanup EXIT
+          mapfile -t enabled_versions < <(gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --filter='state=ENABLED' --format='value(name.basename())')
+          for index in "${!enabled_versions[@]}"; do enabled_versions[index]="${enabled_versions[index]%$'\r'}"; done
+          [[ ${#enabled_versions[@]} -eq 1 && "${enabled_versions[0]}" =~ ^[1-9][0-9]*$ ]] || exit 1
+          printf '%s\n' "${enabled_versions[0]}" > "${version_file}"
+          gcloud secrets versions access "${enabled_versions[0]}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --secret="${CONNECTIVITY_SECRET_ID}" --out-file="${secret_file}" --quiet
+          [[ -s "${secret_file}" ]] || exit 1
+          mkdir -p -- "${codex_home}" && chmod 700 -- "${codex_home}"
+          install -m 600 -- "${secret_file}" "${codex_home}/auth.json"
+          printf '%s\n' 'cli_auth_credentials_store = "file"' > "${codex_home}/config.toml"
+          chmod 600 -- "${codex_home}/config.toml"
+          sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1 > "${auth_hash_file}"
+          npm install --prefix "${cli_prefix}" "@openai/codex@${CODEX_VERSION}" >/dev/null
+          export PATH="${cli_prefix}/node_modules/.bin:${PATH}"
+          [[ "$(CODEX_HOME="${codex_home}" codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          CODEX_HOME="${codex_home}" codex login status >/dev/null 2>&1
+          "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" prepare --active-run --local-source "${caller_source}" --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" --workspace-name "${workspace_name}" --execution-id "${execution_id}"
+          prepared=1
+          base_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')"
+          remote_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
+          [[ "${remote_base_sha}" == "${base_sha}" ]] || exit 1
+          task_branch="codex/ca-p10-032-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
+          git check-ref-format --branch "${task_branch}" >/dev/null
+          encoded_task_branch="${task_branch//\//%2F}"
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/${encoded_task_branch}" --jq 'length')" == 0 ]]
+          origin_url="$(git -C "${workspace_path}" remote get-url origin)"
+          case "${origin_url}" in "https://github.com/${GITHUB_REPOSITORY}"|"https://github.com/${GITHUB_REPOSITORY}.git") ;; *) exit 1 ;; esac
+          git -C "${workspace_path}" switch --create "${task_branch}" "${base_sha}"
+          expected_refs_hash="$(git -C "${workspace_path}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1)"
+          expected_config_hash="$(sha256sum "$(git -C "${workspace_path}" rev-parse --git-path config)" | cut -d ' ' -f 1)"
+          expected_path="ca-p10-032-validation/validation-${GITHUB_RUN_ID}.txt"
+          [[ ! -e "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]] || exit 1
+          expected_content="$(<"${expected_file}")"
+          printf '%s\n' "Create exactly one file at ${expected_path}. Its complete content must be exactly: ${expected_content} Do not run git add, git commit, git push, git tag, branch, checkout, switch, remote, or config commands. Do not modify any other file, git state, branch, refs, config, credentials, or GitHub state, and do not call GitHub APIs." > "${task_file}"
+          env -i PATH="${PATH}" CODEX_HOME="${codex_home}" HOME="${codex_home}" USERPROFILE="${codex_home}" \
+            codex --ask-for-approval never exec --sandbox workspace-write --ephemeral --cd "${workspace_path}" --json --output-last-message "$(cygpath -aw -- "${result_file}")" < "${task_file}" >/dev/null 2>"${stderr_file}"
+          [[ -s "${result_file}" ]] || exit 1
+          [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || exit 1
+          [[ "$(git -C "${workspace_path}" symbolic-ref --short HEAD)" == "${task_branch}" ]]
+          [[ "$(git -C "${workspace_path}" rev-parse HEAD)" == "${base_sha}" ]]
+          [[ "$(sha256sum "$(git -C "${workspace_path}" rev-parse --git-path config)" | cut -d ' ' -f 1)" == "${expected_config_hash}" ]]
+          [[ "$(git -C "${workspace_path}" remote get-url origin)" == "${origin_url}" ]]
+          [[ "$(git -C "${workspace_path}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1)" == "${expected_refs_hash}" ]]
+          changed_paths=()
+          while IFS= read -r status_entry; do
+            [[ -z "${status_entry}" ]] && continue
+            [[ "${status_entry}" == '?? .codex-workspace-owned.json' ]] && continue
+            [[ "${status_entry}" =~ ^..[[:space:]](.+)$ ]] || exit 1
+            changed_paths+=("${BASH_REMATCH[1]}")
+          done < <(git -C "${workspace_path}" status --porcelain=v1 --untracked-files=all)
+          [[ ${#changed_paths[@]} -eq 1 && "${changed_paths[0]}" == "${expected_path}" ]]
+          [[ -f "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]]
+          cmp -s "${workspace_path}/${expected_path}" "${expected_file}"
+          git -C "${workspace_path}" diff --cached --quiet --
+          remote_base_sha_now="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
+          [[ "${remote_base_sha_now}" == "${base_sha}" ]]
+          git -C "${workspace_path}" add -- "${expected_path}"
+          git -C "${workspace_path}" diff --cached --check
+          [[ "$(git -C "${workspace_path}" diff --cached --name-only)" == "${expected_path}" ]]
+          git -C "${workspace_path}" -c user.name='codex-automation' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Validate CA-P10-032 workspace-write path" >/dev/null
+          final_sha="$(git -C "${workspace_path}" rev-parse HEAD)"
+          [[ "${final_sha}" =~ ^[0-9a-f]{40}$ && "${final_sha}" != "${base_sha}" ]]
+          remote_base_sha_now="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
+          [[ "${remote_base_sha_now}" == "${base_sha}" ]]
+          printf '%s\n' "#!/usr/bin/env bash" 'set -euo pipefail' 'case "${1:-}" in *Password*|*password*) printf "%s\\n" "${GH_TOKEN:?}" ;; *) exit 1 ;; esac' > "${askpass_file}"
+          chmod 700 -- "${askpass_file}"
+          GIT_ASKPASS="${askpass_file}" GIT_ASKPASS_REQUIRE=force GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            git -C "${workspace_path}" -c credential.helper= -c credential.username=x-access-token -c core.hooksPath=/dev/null push --porcelain origin "HEAD:refs/heads/${task_branch}" >/dev/null
+          repository_owner="${GITHUB_REPOSITORY%%/*}"
+          pr_collision_response="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" -f state=all -f head="${repository_owner}:${task_branch}" --jq 'length')"
+          [[ "${pr_collision_response}" == 0 ]]
+          pr_url="$(gh pr create --draft --repo "${GITHUB_REPOSITORY}" --base "${base_branch}" --head "${task_branch}" --title "[Codex] CA-P10-032 workspace-write validation" --body "Trusted publication validation for workflow run ${GITHUB_RUN_ID}.")"
+          [[ "${pr_url}" =~ ^https://github\.com/${GITHUB_REPOSITORY}/pull/[1-9][0-9]*$ ]]
+          printf '%s\n' PASS > "${PAYLOAD_STATUS_FILE}"
+          PAYLOAD
+          chmod 700 -- "${CODEX_PAYLOAD_FILE}"
+          if "${automation_source}/scripts/self-hosted/run-local-execution.sh" run --repository-id "${GITHUB_REPOSITORY_ID}" --run-id "${GITHUB_RUN_ID}" --attempt "${GITHUB_RUN_ATTEMPT}" --payload-path "C:/Program Files/Git/bin/bash.exe" --payload-arg "$(cygpath -aw "${automation_source}")" --payload-arg "$(cygpath -aw "${caller_source}")" --payload-arg "${WORKSPACE_NAME}" --payload-arg "${EXECUTION_ID}" --payload-arg "$(git -C "${caller_source}" rev-parse HEAD)" --payload-arg "${CODEX_RESULT_FILE}" --payload-arg "$(cygpath -aw "${expected_file}")"; then
+            [[ -f "${PAYLOAD_STATUS_FILE}" && "$(<"${PAYLOAD_STATUS_FILE}")" == PASS ]]
+          else
+            exit $?
+          fi
+
+      - name: Validate managed area and publication payload cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f -- "${RUNNER_TEMP}/codex-connectivity-secret.json" "${RUNNER_TEMP}/codex-authoritative-version.txt" "${RUNNER_TEMP}/codex-write-result.txt" "${RUNNER_TEMP}/codex-write-payload.sh" "${RUNNER_TEMP}/codex-write-payload.status" "${RUNNER_TEMP}/codex-write-task.md" "${RUNNER_TEMP}/codex-write.stderr" "${RUNNER_TEMP}/codex-write-auth-before.sha256" "${RUNNER_TEMP}/codex-write-expected.txt" "${RUNNER_TEMP}/codex-write-askpass.sh" "${RUNNER_TEMP}/codex-google-credentials.json"
+          "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/manage-execution-area.sh" preflight
+          [[ ! -e "${CODEX_AUTOMATION_ROOT}/state/current-run.json" ]]
+          echo "Self-hosted workspace-write validation cleanup passed"
 
 

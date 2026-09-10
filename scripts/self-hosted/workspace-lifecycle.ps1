@@ -8,6 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string]$BaseSha,
     [Parameter(Mandatory = $true)][string]$WorkspaceName,
     [Parameter(Mandatory = $true)][string]$ExecutionId,
+    [string]$ExpectedFinalSha,
     [switch]$ActiveRun
 )
 Set-StrictMode -Version Latest
@@ -20,6 +21,7 @@ function FullPath([string]$Path) { try { return [IO.Path]::GetFullPath($Path) } 
 function Assert-Token([string]$Value, [string]$Name, [string]$Pattern) { if ([string]::IsNullOrWhiteSpace($Value) -or $Value -notmatch $Pattern) { Fail "$Name is invalid" } }
 function Assert-Inputs {
     Assert-Token $BaseSha 'base SHA' '^[0-9a-fA-F]{40}$'
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedFinalSha)) { Assert-Token $ExpectedFinalSha 'expected final SHA' '^[0-9a-fA-F]{40}$' }
     Assert-Token $ExecutionId 'execution ID' '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
     Assert-Token $WorkspaceName 'workspace name' '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
     Assert-Token $ExpectedRepository 'repository identity' '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
@@ -83,11 +85,20 @@ function Invoke-Git([string[]]$Arguments) {
     }
     if ($exitCode -ne 0) { Fail "git operation failed ($($Arguments[0]))" }
 }
+function Assert-CommitObject([string]$WorkspacePath, [string]$Sha) {
+    $type = (& git -C $WorkspacePath cat-file -t "$Sha`^{commit}" 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or $type -cne 'commit') { Fail 'expected final SHA is not an existing commit object' }
+}
 function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipMarker) {
     $actualRemote = (& git -C $WorkspacePath remote get-url origin 2>$null).Trim()
     if ((Normalize-Repository $actualRemote) -cne $ExpectedRepository) { Fail 'cloned repository identity is unexpected' }
     $head = (& git -C $WorkspacePath rev-parse HEAD 2>$null).Trim()
-    if ($head -cne $BaseSha.ToLowerInvariant()) { Fail 'workspace HEAD does not match immutable base SHA' }
+    $expectedHead = $BaseSha.ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedFinalSha)) {
+        Assert-CommitObject $WorkspacePath $ExpectedFinalSha.ToLowerInvariant()
+        $expectedHead = $ExpectedFinalSha.ToLowerInvariant()
+    }
+    if ($head -cne $expectedHead) { Fail 'workspace HEAD does not match expected immutable commit SHA' }
     $status = @(& git -C $WorkspacePath status --porcelain=v1 --untracked-files=all 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($AllowOwnershipMarker) {
         $status = @($status | Where-Object { $_ -ne '?? .codex-workspace-owned.json' })

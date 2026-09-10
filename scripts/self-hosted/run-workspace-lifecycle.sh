@@ -20,7 +20,7 @@ if [[ "$root" =~ ^[A-Za-z]:[\\/] ]]; then
 fi
 
 action="${1:-}"; shift || true
-repository_url=""; local_source_path=""; expected_repository=""; base_sha=""; workspace_name=""; execution_id=""; active_run=0
+repository_url=""; local_source_path=""; expected_repository=""; base_sha=""; workspace_name=""; execution_id=""; expected_final_sha=""; active_run=0
 while (($#)); do
   case "$1" in
     --repository-url) repository_url="${2:-}"; shift 2 ;;
@@ -29,6 +29,7 @@ while (($#)); do
     --base-sha) base_sha="${2:-}"; shift 2 ;;
     --workspace-name) workspace_name="${2:-}"; shift 2 ;;
     --execution-id) execution_id="${2:-}"; shift 2 ;;
+    --expected-final-sha) expected_final_sha="${2:-}"; shift 2 ;;
     --active-run) active_run=1; shift ;;
     *) printf 'unknown option\n' >&2; exit 64 ;;
   esac
@@ -42,5 +43,6 @@ if command -v powershell.exe >/dev/null 2>&1; then powershell_bin=powershell.exe
 elif command -v pwsh >/dev/null 2>&1; then powershell_bin=pwsh
 else printf 'PowerShell is required\n' >&2; exit 69; fi
 common=(-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$helper" -Action "$action" -Root "$root" -RepositoryUrl "$repository_url" -LocalSourcePath "$local_source_path" -ExpectedRepository "$expected_repository" -BaseSha "$base_sha" -WorkspaceName "$workspace_name" -ExecutionId "$execution_id")
+if [[ -n "$expected_final_sha" ]]; then common+=(-ExpectedFinalSha "$expected_final_sha"); fi
 if (( active_run )); then common+=(-ActiveRun); fi
 exec "$powershell_bin" "${common[@]}"
