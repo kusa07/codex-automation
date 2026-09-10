@@ -1599,6 +1599,7 @@ jobs:
           execution_id="$4"
           base_sha="$5"
           result_file="$(cygpath -u -- "$6")"
+          result_file_windows="$(cygpath -aw -- "$6")"
           managed_root="$(cygpath -u -- "${CODEX_AUTOMATION_ROOT}")"
           workspace_path="${managed_root}/workspaces/${workspace_name}"
           codex_home="${managed_root}/codex-home/${workspace_name}"
@@ -1699,7 +1700,7 @@ jobs:
           prepared=1
           cd -- "${workspace_path}"
           printf '%s\n' 'Read this repository and return a short summary of its top-level structure. Do not modify files, git state, branches, or credentials.' > "${task_file}"
-          if CODEX_HOME="${codex_home}" codex --ask-for-approval never exec --sandbox read-only --ephemeral --cd "${workspace_path}" --json --output-last-message "$result_file" < "$task_file" >/dev/null 2>"${stderr_file}"; then
+          if CODEX_HOME="${codex_home}" codex --ask-for-approval never exec --sandbox read-only --ephemeral --cd "${workspace_path}" --json --output-last-message "$result_file_windows" < "$task_file" >/dev/null 2>"${stderr_file}"; then
             emit_authentication_change_status
           else
             codex_exit=$?
@@ -1707,8 +1708,14 @@ jobs:
             classify_codex_failure
             exit "${codex_exit}"
           fi
-          [[ -s "$result_file" ]]
-          [[ -z "$(git -C "$workspace_path" status --porcelain=v1 --untracked-files=all)" ]]
+          [[ -s "$result_file" ]] || {
+            echo "Codex result file is empty" >&2
+            exit 1
+          }
+          if [[ -n "$(git -C "$workspace_path" status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "Codex read-only workspace was modified" >&2
+            exit 1
+          fi
           [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || {
             echo "Codex authentication changed; refusing adoption" >&2
             exit 1
