@@ -1888,6 +1888,7 @@ jobs:
           EXECUTION_ID: repo-${{ github.repository_id }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          printf '%s\n' 'WRITE_STAGE=wrapper_start'
           umask 077
           caller_source="${GITHUB_WORKSPACE}/caller-source"
           automation_source="${GITHUB_WORKSPACE}/automation-source"
@@ -1899,6 +1900,7 @@ jobs:
           cat > "${CODEX_PAYLOAD_FILE}" <<'PAYLOAD'
           #!/usr/bin/env bash
           set -euo pipefail
+          printf '%s\n' 'WRITE_STAGE=payload_start'
           automation_source="$(cygpath -u -- "$1")"
           caller_source="$(cygpath -aw -- "$2")"
           workspace_name="$3"
@@ -1936,12 +1938,16 @@ jobs:
             exit "${status}"
           }
           trap cleanup EXIT
+          printf '%s\n' 'WRITE_STAGE=secret_preflight_start'
           mapfile -t enabled_versions < <(gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --filter='state=ENABLED' --format='value(name.basename())')
           for index in "${!enabled_versions[@]}"; do enabled_versions[index]="${enabled_versions[index]%$'\r'}"; done
           [[ ${#enabled_versions[@]} -eq 1 && "${enabled_versions[0]}" =~ ^[1-9][0-9]*$ ]] || exit 1
+          printf '%s\n' 'WRITE_STAGE=secret_preflight_complete'
           printf '%s\n' "${enabled_versions[0]}" > "${version_file}"
+          printf '%s\n' 'WRITE_STAGE=secret_access_start'
           gcloud secrets versions access "${enabled_versions[0]}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --secret="${CONNECTIVITY_SECRET_ID}" --out-file="${secret_file}" --quiet
           [[ -s "${secret_file}" ]] || exit 1
+          printf '%s\n' 'WRITE_STAGE=secret_access_complete'
           mkdir -p -- "${codex_home}" && chmod 700 -- "${codex_home}"
           install -m 600 -- "${secret_file}" "${codex_home}/auth.json"
           printf '%s\n' 'cli_auth_credentials_store = "file"' > "${codex_home}/config.toml"
@@ -1951,8 +1957,12 @@ jobs:
           export PATH="${cli_prefix}/node_modules/.bin:${PATH}"
           [[ "$(CODEX_HOME="${codex_home}" codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
           CODEX_HOME="${codex_home}" codex login status >/dev/null 2>&1
+          printf '%s\n' 'WRITE_STAGE=codex_runtime_ready'
+          printf '%s\n' 'WRITE_STAGE=workspace_prepare_start'
           "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" prepare --active-run --local-source "${caller_source}" --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" --workspace-name "${workspace_name}" --execution-id "${execution_id}"
           prepared=1
+          printf '%s\n' 'WRITE_STAGE=workspace_prepare_complete'
+          printf '%s\n' 'WRITE_STAGE=branch_setup_start'
           base_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')"
           remote_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
           [[ "${remote_base_sha}" == "${base_sha}" ]] || exit 1
@@ -1963,16 +1973,20 @@ jobs:
           origin_url="$(git -C "${workspace_path}" remote get-url origin)"
           case "${origin_url}" in "https://github.com/${GITHUB_REPOSITORY}"|"https://github.com/${GITHUB_REPOSITORY}.git") ;; *) exit 1 ;; esac
           git -C "${workspace_path}" switch --create "${task_branch}" "${base_sha}"
+          printf '%s\n' 'WRITE_STAGE=branch_setup_complete'
           expected_refs_hash="$(git -C "${workspace_path}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1)"
           expected_config_hash="$(sha256sum "$(git -C "${workspace_path}" rev-parse --git-path config)" | cut -d ' ' -f 1)"
           expected_path="ca-p10-032-validation/validation-${GITHUB_RUN_ID}.txt"
           [[ ! -e "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]] || exit 1
           expected_content="$(<"${expected_file}")"
           printf '%s\n' "Create exactly one file at ${expected_path}. Its complete content must be exactly: ${expected_content} Do not run git add, git commit, git push, git tag, branch, checkout, switch, remote, or config commands. Do not modify any other file, git state, branch, refs, config, credentials, or GitHub state, and do not call GitHub APIs." > "${task_file}"
+          printf '%s\n' 'WRITE_STAGE=codex_execution_start'
           env -i PATH="${PATH}" CODEX_HOME="${codex_home}" HOME="${codex_home}" USERPROFILE="${codex_home}" \
             codex --ask-for-approval never exec --sandbox workspace-write --ephemeral --cd "${workspace_path}" --json --output-last-message "$(cygpath -aw -- "${result_file}")" < "${task_file}" >/dev/null 2>"${stderr_file}"
           [[ -s "${result_file}" ]] || exit 1
           [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || exit 1
+          printf '%s\n' 'WRITE_STAGE=codex_execution_complete'
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_start'
           [[ "$(git -C "${workspace_path}" symbolic-ref --short HEAD)" == "${task_branch}" ]]
           [[ "$(git -C "${workspace_path}" rev-parse HEAD)" == "${base_sha}" ]]
           [[ "$(sha256sum "$(git -C "${workspace_path}" rev-parse --git-path config)" | cut -d ' ' -f 1)" == "${expected_config_hash}" ]]
@@ -1991,26 +2005,35 @@ jobs:
           git -C "${workspace_path}" diff --cached --quiet --
           remote_base_sha_now="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
           [[ "${remote_base_sha_now}" == "${base_sha}" ]]
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_complete'
+          printf '%s\n' 'WRITE_STAGE=trusted_commit_start'
           git -C "${workspace_path}" add -- "${expected_path}"
           git -C "${workspace_path}" diff --cached --check
           [[ "$(git -C "${workspace_path}" diff --cached --name-only)" == "${expected_path}" ]]
           git -C "${workspace_path}" -c user.name='codex-automation' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Validate CA-P10-032 workspace-write path" >/dev/null
           final_sha="$(git -C "${workspace_path}" rev-parse HEAD)"
           [[ "${final_sha}" =~ ^[0-9a-f]{40}$ && "${final_sha}" != "${base_sha}" ]]
+          printf '%s\n' 'WRITE_STAGE=trusted_commit_complete'
           remote_base_sha_now="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
           [[ "${remote_base_sha_now}" == "${base_sha}" ]]
           printf '%s\n' "#!/usr/bin/env bash" 'set -euo pipefail' 'case "${1:-}" in *Password*|*password*) printf "%s\\n" "${GH_TOKEN:?}" ;; *) exit 1 ;; esac' > "${askpass_file}"
           chmod 700 -- "${askpass_file}"
+          printf '%s\n' 'WRITE_STAGE=push_start'
           GIT_ASKPASS="${askpass_file}" GIT_ASKPASS_REQUIRE=force GIT_TERMINAL_PROMPT=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
             git -C "${workspace_path}" -c credential.helper= -c credential.username=x-access-token -c core.hooksPath=/dev/null push --porcelain origin "HEAD:refs/heads/${task_branch}" >/dev/null
+          printf '%s\n' 'WRITE_STAGE=push_complete'
           repository_owner="${GITHUB_REPOSITORY%%/*}"
           pr_collision_response="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/pulls" -f state=all -f head="${repository_owner}:${task_branch}" --jq 'length')"
           [[ "${pr_collision_response}" == 0 ]]
+          printf '%s\n' 'WRITE_STAGE=draft_pr_start'
           pr_url="$(gh pr create --draft --repo "${GITHUB_REPOSITORY}" --base "${base_branch}" --head "${task_branch}" --title "[Codex] CA-P10-032 workspace-write validation" --body "Trusted publication validation for workflow run ${GITHUB_RUN_ID}.")"
           [[ "${pr_url}" =~ ^https://github\.com/${GITHUB_REPOSITORY}/pull/[1-9][0-9]*$ ]]
+          printf '%s\n' 'WRITE_STAGE=draft_pr_complete'
+          printf '%s\n' 'WRITE_STAGE=payload_complete'
           printf '%s\n' PASS > "${PAYLOAD_STATUS_FILE}"
           PAYLOAD
           chmod 700 -- "${CODEX_PAYLOAD_FILE}"
+          printf '%s\n' 'WRITE_STAGE=payload_launch'
           if "${automation_source}/scripts/self-hosted/run-local-execution.sh" run --repository-id "${GITHUB_REPOSITORY_ID}" --run-id "${GITHUB_RUN_ID}" --attempt "${GITHUB_RUN_ATTEMPT}" --payload-path "C:/Program Files/Git/bin/bash.exe" --payload-arg "$(cygpath -aw "${automation_source}")" --payload-arg "$(cygpath -aw "${caller_source}")" --payload-arg "${WORKSPACE_NAME}" --payload-arg "${EXECUTION_ID}" --payload-arg "$(git -C "${caller_source}" rev-parse HEAD)" --payload-arg "${CODEX_RESULT_FILE}" --payload-arg "$(cygpath -aw "${expected_file}")"; then
             [[ -f "${PAYLOAD_STATUS_FILE}" && "$(<"${PAYLOAD_STATUS_FILE}")" == PASS ]]
           else
