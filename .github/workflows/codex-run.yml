@@ -1991,9 +1991,11 @@ jobs:
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_start'
           [[ "$(git -C "${workspace_path}" symbolic-ref --short HEAD)" == "${task_branch}" ]]
           [[ "$(git -C "${workspace_path}" rev-parse HEAD)" == "${base_sha}" ]]
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_branch_head_complete'
           [[ "$(sha256sum "${git_config_path}" | cut -d ' ' -f 1)" == "${expected_config_hash}" ]]
           [[ "$(git -C "${workspace_path}" remote get-url origin)" == "${origin_url}" ]]
           [[ "$(git -C "${workspace_path}" for-each-ref --format='%(refname)%00%(objectname)%00' | sha256sum | cut -d ' ' -f 1)" == "${expected_refs_hash}" ]]
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_config_origin_refs_complete'
           changed_paths=()
           while IFS= read -r status_entry; do
             [[ -z "${status_entry}" ]] && continue
@@ -2002,11 +2004,15 @@ jobs:
             changed_paths+=("${BASH_REMATCH[1]}")
           done < <(git -C "${workspace_path}" status --porcelain=v1 --untracked-files=all)
           [[ ${#changed_paths[@]} -eq 1 && "${changed_paths[0]}" == "${expected_path}" ]]
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_complete'
           [[ -f "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]]
           cmp -s "${workspace_path}/${expected_path}" "${expected_file}"
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_expected_file_content_complete'
           git -C "${workspace_path}" diff --cached --quiet --
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_index_unstaged_complete'
           remote_base_sha_now="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
           [[ "${remote_base_sha_now}" == "${base_sha}" ]]
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_remote_base_complete'
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_complete'
           printf '%s\n' 'WRITE_STAGE=trusted_commit_start'
           git -C "${workspace_path}" add -- "${expected_path}"
