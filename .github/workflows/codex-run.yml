@@ -1627,6 +1627,25 @@ jobs:
             fi
             printf 'Codex exec failed; classification=%s\n' "${failure_class}" >&2
           }
+          emit_authentication_change_status() {
+            local baseline_hash=""
+            local current_hash=""
+            local changed=false
+            if [[ -r "${auth_hash_file}" ]]; then
+              baseline_hash="$(<"${auth_hash_file}")" || baseline_hash=""
+            fi
+            if [[ -f "${codex_home}/auth.json" ]]; then
+              if current_hash="$(sha256sum "${codex_home}/auth.json" 2>/dev/null | cut -d ' ' -f 1)"; then
+                :
+              else
+                current_hash=""
+              fi
+            fi
+            if [[ -z "${baseline_hash}" || -z "${current_hash}" || "${current_hash}" != "${baseline_hash}" ]]; then
+              changed=true
+            fi
+            printf 'Codex authentication state changed=%s\n' "${changed}"
+          }
           cleanup() {
             status=$?
             if cd -- "${automation_source}"; then
@@ -1681,9 +1700,10 @@ jobs:
           cd -- "${workspace_path}"
           printf '%s\n' 'Read this repository and return a short summary of its top-level structure. Do not modify files, git state, branches, or credentials.' > "${task_file}"
           if CODEX_HOME="${codex_home}" codex --ask-for-approval never exec --sandbox read-only --ephemeral --cd "${workspace_path}" --json --output-last-message "$result_file" < "$task_file" >/dev/null 2>"${stderr_file}"; then
-            :
+            emit_authentication_change_status
           else
             codex_exit=$?
+            emit_authentication_change_status
             classify_codex_failure
             exit "${codex_exit}"
           fi
