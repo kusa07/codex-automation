@@ -134,7 +134,7 @@ Phase 10は、現時点では以下の5つのcore work unitで進める。
 |---|---|---|---|---|---|
 | `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 | Complete / landed |
 | `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Complete |
-| `CA-P10-030` | E + F + G | 2 | Workspace lifecycle + Windows/Git Bash adaptation + WIF/Secret + isolated Local Codex read-only | 重 | In progress |
+| `CA-P10-030` | E + F + G | 2 | Workspace lifecycle + Windows/Git Bash adaptation + WIF/Secret + isolated Local Codex read-only | 重 | Complete |
 | `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Planned |
 | `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Planned |
 
@@ -163,6 +163,7 @@ Core work unitの実装結果を安全に着地させる、execution planをactu
 | `CA-P10-030_002` | startup_failure grounding / caller permission fix / job-generation checkpoint。既存runner offlineによりSTOP | STOP |
 | `CA-P10-030_003` | existing runner availability restored; fresh validation reached Stage A, then WSL `bash.exe` path failure. New workflow SHA would require WIF condition change, so STOP | STOP |
 | `CA-P10-030_004` | authorized Git Bash fix / one-time WIF SHA migrationのGate 1。live Providerに`1faacb09f24d9ed0fee6a602edafc6fb51eafb32`以外の未退役SHAが2件あり、単一移行前提とmaterialに不一致のためProvider・workflow・caller無変更でSTOP | STOP |
+| `CA-P10-030_013` | automation-owned workspace markerによるread-only false positiveをbounded fixし、WIF staged migration・immutable caller pin・real-system validation・Tester・Independent Reviewを完了 | Complete |
 
 補助・分割管理番号はROADMAP上のphaseやB〜Jのlogical validation stepを増やさない。
 
@@ -746,7 +747,7 @@ public repositoryへのunsafe runner exposure、long-lived PAT追加、broad per
 
 ### Status
 
-**In progress / implementation landed; real-system validation pending**
+**Complete — real-system validation, Tester, and Independent Review passed**
 
 ### Current landed state
 
@@ -796,6 +797,8 @@ The caller permission ceiling now satisfies GitHub's reusable-workflow validatio
 `CA-P10-030_005` landed the explicit Git for Windows Bash invocation at `9b630dcd671ec33a00a0ce341eb3ce5d1abe6188`; the caller was pinned to it at `b1dddbe729dd8655a4cc7655ebc26eaa08435b1e`. The WIF Provider condition retained its two historical approved workflow SHAs and staged the existing `1faacb09f24d9ed0fee6a602edafc6fb51eafb32` plus `9b630dcd671ec33a00a0ce341eb3ce5d1abe6188`. Run `34362003539` confirmed self-hosted pickup, explicit Git Bash, WIF, Google credential relocation, and managed execution setup, then exposed a PowerShell positional-argument binding defect before Secret / Local Codex execution.
 
 `CA-P10-030_006` pushed the bounded payload-argument transport fix at `28e5d73a9952fb9f9fd751851ad9656f1f911b4e`, staged that SHA in the existing WIF Provider without changing owner/workflow restrictions or mappings, and pinned caller `kusa07/interest-gacha` at `b68118184431a9363f5ecb122b19805648bda538`. Run `34366016474` (job `102514823087`) used explicit Git for Windows Bash and passed runner/caller baseline, immutable-source validation, managed execution setup, direct WIF, Google Cloud setup, credential relocation, and the previous payload-argument boundary. It then stopped at the isolated payload's exactly-one-enabled-Secret-version preflight. Read-only Secret metadata showed version `2` enabled and version `1` disabled, and the exact `state=ENABLED` query returned version `2`; this is evidence against a Secret lifecycle state failure and grounds a remaining Windows Git Bash output/validation compatibility investigation. The authorized additional reusable-workflow migration has not yet been used. The live WIF approved-SHA set remains `{1c146e847eaa03bb1568991459feacbf443ef74d, 9f9c7b8d907cbf4017bea1feb7864b65ee14621b, 1faacb09f24d9ed0fee6a602edafc6fb51eafb32, 9b630dcd671ec33a00a0ce341eb3ce5d1abe6188, 28e5d73a9952fb9f9fd751851ad9656f1f911b4e}`. Historical SHAs are retained pending separate evidence; no WIF finalization occurred. CA-P10-030 remains In progress and Phase 10 remains Next. A new bounded validation-mode-only fix, Tester retest, staged WIF/caller migration, real-system validation, cleanup/residual validation, and Independent Review remain required before completion; do not start CA-P10-032.
+
+`CA-P10-030_013` completed E + F + G. The bounded reusable-workflow fix `f48ae58432492643b86dce2e1021e99b23f09cb4` ignores only the exact automation-owned untracked marker `?? .codex-workspace-owned.json` when checking Local Codex read-only workspace state; tracked, staged, deleted, and all other untracked changes remain fail-closed. Caller `kusa07/interest-gacha` is pinned immutably through `b9d4acd29a1ca41344f383fca5cd9c0f897266e3`. Live WIF retained the existing historical approved SHA grants and staged the exact approved set including `f48ae58432492643b86dce2e1021e99b23f09cb4`, while preserving the repository-owner restriction, reusable-workflow identity restriction, and attribute mappings. Fresh validation run `34491284239` (job `102918374009`) succeeded on `codex-automation-windows-01` using `C:\PROGRA~1\Git\bin\bash.exe`; it passed managed-area preflight, WIF, temporary Google credential isolation, exactly-one-enabled Secret lifecycle, isolated Local Codex read-only execution, caller-state validation, cleanup, and residual validation. Secret payloads were not logged; the final metadata state had exactly one enabled version. Tester and Independent Reviewer both passed with no blocking finding. `CA-P10-030` is Complete. Phase 10 remains Next, and `CA-P10-032` remains Planned and is not started.
 
 ### Goal
 
