@@ -1612,21 +1612,22 @@ jobs:
           prepared=0
           cleanup() {
             status=$?
-            if (( prepared )); then
-              "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" cleanup --active-run \
-                --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" \
-                --workspace-name "${workspace_name}" --execution-id "${execution_id}" >/dev/null || status=1
+            if cd -- "${automation_source}"; then
+              if (( prepared )); then
+                "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" cleanup --active-run \
+                  --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" \
+                  --workspace-name "${workspace_name}" --execution-id "${execution_id}" >/dev/null || status=1
+              fi
+            else
+              status=1
             fi
             rm -f -- "${secret_file}" "${version_file}" "${auth_hash_file}" "${stderr_file}" "${task_file}" "${result_file}"
             rm -rf -- "${cli_prefix}"
-            rm -f -- "${codex_home}/auth.json" "${codex_home}/config.toml"
-            if [[ -d "${codex_home}" ]]; then
-              [[ -z "$(find "${codex_home}" -mindepth 1 -print -quit)" ]] || {
-                echo "Execution-specific Codex home is not residue-free" >&2
-                status=1
-              }
-              rmdir -- "${codex_home}" 2>/dev/null || status=1
-            fi
+            rm -rf -- "${codex_home}"
+            [[ ! -e "${codex_home}" ]] || {
+              echo "Execution-specific Codex home cleanup left residue" >&2
+              status=1
+            }
             exit "${status}"
           }
           trap cleanup EXIT
@@ -1654,7 +1655,7 @@ jobs:
           sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1 > "${auth_hash_file}"
           npm install --prefix "${cli_prefix}" "@openai/codex@${CODEX_VERSION}" >/dev/null
           export PATH="${cli_prefix}/node_modules/.bin:${PATH}"
-          [[ "$(codex --version)" == "codex-cli ${CODEX_VERSION}" ]] || exit 1
+          [[ "$(CODEX_HOME="${codex_home}" codex --version)" == "codex-cli ${CODEX_VERSION}" ]] || exit 1
           CODEX_HOME="${codex_home}" codex login status >/dev/null 2>&1 || exit 1
           "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" prepare --active-run \
             --local-source "${caller_source}" --expected-repository "${GITHUB_REPOSITORY}" \
