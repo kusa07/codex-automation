@@ -1712,10 +1712,12 @@ jobs:
             echo "Codex result file is empty" >&2
             exit 1
           }
-          if [[ -n "$(git -C "$workspace_path" status --porcelain=v1 --untracked-files=all)" ]]; then
+          mapfile -t workspace_status < <(git -C "$workspace_path" status --porcelain=v1 --untracked-files=all)
+          for status_entry in "${workspace_status[@]}"; do
+            [[ "$status_entry" == '?? .codex-workspace-owned.json' ]] && continue
             echo "Codex read-only workspace was modified" >&2
             exit 1
-          fi
+          done
           [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || {
             echo "Codex authentication changed; refusing adoption" >&2
             exit 1
