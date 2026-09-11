@@ -1984,7 +1984,7 @@ jobs:
           printf '%s\n' "Create exactly one file at ${expected_path}. Its complete content must be exactly: ${expected_content} Do not run git add, git commit, git push, git tag, branch, checkout, switch, remote, or config commands. Do not modify any other file, git state, branch, refs, config, credentials, or GitHub state, and do not call GitHub APIs." > "${task_file}"
           printf '%s\n' 'WRITE_STAGE=codex_execution_start'
           env -i PATH="${PATH}" CODEX_HOME="${codex_home}" HOME="${codex_home}" USERPROFILE="${codex_home}" \
-            codex --ask-for-approval never exec --sandbox workspace-write --ephemeral --cd "${workspace_path}" --json --output-last-message "$(cygpath -aw -- "${result_file}")" < "${task_file}" >/dev/null 2>"${stderr_file}"
+            codex --approve-for-me exec --sandbox workspace-write --ephemeral --cd "${workspace_path}" --json --output-last-message "$(cygpath -aw -- "${result_file}")" < "${task_file}" >/dev/null 2>"${stderr_file}"
           [[ -s "${result_file}" ]] || exit 1
           [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || exit 1
           printf '%s\n' 'WRITE_STAGE=codex_execution_complete'
