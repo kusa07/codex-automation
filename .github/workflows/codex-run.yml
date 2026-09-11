@@ -2003,6 +2003,7 @@ jobs:
             [[ "${status_entry}" =~ ^..[[:space:]](.+)$ ]] || exit 1
             changed_paths+=("${BASH_REMATCH[1]}")
           done < <(git -C "${workspace_path}" status --porcelain=v1 --untracked-files=all)
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_collection_complete'
           [[ ${#changed_paths[@]} -eq 1 && "${changed_paths[0]}" == "${expected_path}" ]]
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_complete'
           [[ -f "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]]
