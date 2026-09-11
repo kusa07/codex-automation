@@ -80,6 +80,18 @@ try {
     Set-Content -LiteralPath (Join-Path $dirty.Path 'unexpected.txt') -Value 'unexpected' -NoNewline
     Assert-Fails 'dirty trusted-final cleanup' { Invoke-Lifecycle cleanup $dirty.Root $finalSha }
 
+    $dirtyOwned = New-Workspace 'dirty-owned'
+    $payloadDirectory = Join-Path $dirtyOwned.Path 'ca-p10-032-validation'
+    New-Item -ItemType Directory -Path $payloadDirectory -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $payloadDirectory 'validation-12345.txt') -Value 'failed payload' -NoNewline
+    Invoke-Lifecycle cleanup $dirtyOwned.Root
+    if (Test-Path -LiteralPath $dirtyOwned.Path) { throw 'dirty-owned cleanup left workspace residue' }
+
+    $dirtyUnrelated = New-Workspace 'dirty-unrelated'
+    Set-Content -LiteralPath (Join-Path $dirtyUnrelated.Path 'unrelated.txt') -Value 'unrelated' -NoNewline
+    Assert-Fails 'dirty unrelated cleanup' { Invoke-Lifecycle cleanup $dirtyUnrelated.Root }
+    if (-not (Test-Path -LiteralPath $dirtyUnrelated.Path)) { throw 'dirty unrelated cleanup removed workspace' }
+
     $markerMismatch = New-Workspace 'marker-mismatch'
     $markerPath = Join-Path $markerMismatch.Path '.codex-workspace-owned.json'
     $marker = Get-Content -LiteralPath $markerPath -Raw

@@ -49,7 +49,9 @@ function Assert-NoReparsePath([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     while ($null -ne $item) {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Fail 'reparse point in workspace path' }
-        $item = $item.Parent
+        $parentProperty = $item.PSObject.Properties['Parent']
+        if ($null -eq $parentProperty) { break }
+        $item = $parentProperty.Value
     }
 }
 function Normalize-Repository([string]$Value) {
@@ -89,7 +91,7 @@ function Assert-CommitObject([string]$WorkspacePath, [string]$Sha) {
     $type = (& git -C $WorkspacePath cat-file -t "$Sha`^{commit}" 2>$null).Trim()
     if ($LASTEXITCODE -ne 0 -or $type -cne 'commit') { Fail 'expected final SHA is not an existing commit object' }
 }
-function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipMarker) {
+function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipMarker, [switch]$AllowSingleDirtyPayload) {
     $actualRemote = (& git -C $WorkspacePath remote get-url origin 2>$null).Trim()
     if ((Normalize-Repository $actualRemote) -cne $ExpectedRepository) { Fail 'cloned repository identity is unexpected' }
     $head = (& git -C $WorkspacePath rev-parse HEAD 2>$null).Trim()
@@ -103,7 +105,11 @@ function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipM
     if ($AllowOwnershipMarker) {
         $status = @($status | Where-Object { $_ -ne '?? .codex-workspace-owned.json' })
     }
-    if ($status.Count -ne 0) { Fail 'workspace base state is not clean' }
+    if ($status.Count -eq 0) { return }
+    if (-not $AllowSingleDirtyPayload -or $status.Count -ne 1 -or $status[0] -notmatch '^\?\? ca-p10-032-validation/validation-[0-9]+\.txt$') { Fail 'workspace base state is not clean' }
+    $payloadPath = Join-Path $WorkspacePath ($status[0].Substring(3))
+    if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) { Fail 'failed payload artifact is not a regular file' }
+    Assert-NoReparsePath $payloadPath
 }
 function Assert-SourceState([string]$SourcePath) {
     if (-not (Test-Path -LiteralPath $SourcePath -PathType Container)) { Fail 'local source is missing' }
@@ -126,6 +132,10 @@ function Assert-ActiveRunState([string]$FullRoot) {
     if ([int]$state.schema -ne 1 -or [string]$state.execution_id -cne $ExecutionId) { Fail 'active current-run identity does not match execution' }
     if ([string]$state.repository_id -notmatch '^[0-9]+$' -or [string]$state.github_run_id -notmatch '^[0-9]+$' -or [string]$state.github_run_attempt -notmatch '^[0-9]+$') { Fail 'active current-run identity fields are invalid' }
     if ([string]::IsNullOrWhiteSpace([string]$state.started_at_utc)) { Fail 'active current-run timestamp is invalid' }
+}
+function Assert-InactiveRunState([string]$FullRoot) {
+    $statePath = Join-Path (Join-Path $FullRoot 'state') 'current-run.json'
+    if (Test-Path -LiteralPath $statePath) { Fail 'inactive cleanup cannot run while current-run state exists' }
 }
 
 Assert-Inputs
@@ -181,7 +191,9 @@ Assert-ManagedWorkspaceBoundary $fullRoot
 if ($ActiveRun) { Assert-ActiveRunState $fullRoot }
 if (Test-Path -LiteralPath $workspacePath) { Assert-NoReparsePath $workspacePath }
 Read-OwnershipMarker $workspacePath | Out-Null
-Assert-RepositoryState $workspacePath -AllowOwnershipMarker
+$allowSingleDirtyPayload = (-not $ActiveRun -and [string]::IsNullOrWhiteSpace($ExpectedFinalSha))
+if ($allowSingleDirtyPayload) { Assert-InactiveRunState $fullRoot }
+Assert-RepositoryState $workspacePath -AllowOwnershipMarker -AllowSingleDirtyPayload:$allowSingleDirtyPayload
 try {
     Remove-Item -LiteralPath $workspacePath -Recurse -Force -ErrorAction Stop
     if (Test-Path -LiteralPath $workspacePath) { Fail 'workspace cleanup left residue' }
