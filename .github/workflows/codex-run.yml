@@ -2016,8 +2016,15 @@ jobs:
           [[ "${changed_paths[0]}" == "${expected_path}" ]]
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_path_complete'
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_complete'
-          [[ -f "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]]
-          cmp -s "${workspace_path}/${expected_path}" "${expected_file}"
+          if [[ ! -f "${workspace_path}/${expected_path}" || -L "${workspace_path}/${expected_path}" ]]; then
+            printf '%s\n' 'WRITE_STAGE=post_codex_validation_expected_file_regular_check_failed'
+            exit 1
+          fi
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_expected_file_regular_check_complete'
+          if ! cmp -s "${workspace_path}/${expected_path}" "${expected_file}"; then
+            printf '%s\n' 'WRITE_STAGE=post_codex_validation_expected_file_content_check_failed'
+            exit 1
+          fi
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_expected_file_content_complete'
           git -C "${workspace_path}" diff --cached --quiet --
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_index_unstaged_complete'
