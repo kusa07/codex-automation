@@ -2004,7 +2004,10 @@ jobs:
             changed_paths+=("${BASH_REMATCH[1]}")
           done < <(git -C "${workspace_path}" status --porcelain=v1 --untracked-files=all)
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_collection_complete'
-          [[ ${#changed_paths[@]} -eq 1 && "${changed_paths[0]}" == "${expected_path}" ]]
+          [[ ${#changed_paths[@]} -eq 1 ]]
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_count_complete'
+          [[ "${changed_paths[0]}" == "${expected_path}" ]]
+          printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_path_complete'
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_changed_paths_complete'
           [[ -f "${workspace_path}/${expected_path}" && ! -L "${workspace_path}/${expected_path}" ]]
           cmp -s "${workspace_path}/${expected_path}" "${expected_file}"
