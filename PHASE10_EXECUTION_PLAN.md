@@ -135,7 +135,7 @@ Phase 10は、現時点では以下の5つのcore work unitで進める。
 | `CA-P10-028` | B | 1 | Managed Execution Area実装 + negative-path検証 | 中〜重 | Complete / landed |
 | `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Complete |
 | `CA-P10-030` | E + F + G | 2 | Workspace lifecycle + Windows/Git Bash adaptation + WIF/Secret + isolated Local Codex read-only | 重 | Complete |
-| `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Planned |
+| `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Complete |
 | `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Planned |
 
 計画上の5件を機械的に守ること自体は目的ではない。
@@ -905,6 +905,12 @@ Draft PR
 ```
 
 を成立させる。
+
+### Completion record
+
+`CA-P10-032_011` completed H + I without changing the Local Codex / trusted-publication responsibility boundary. Reusable workflow commit `42c585013659b79b4ad64c8bcc164405e935a2d2` aligned the validation fixture and Local Codex instruction on an exact no-trailing-newline byte contract; caller `kusa07/interest-gacha` pinned it through `d7d5a07c30349b6be4779972f54e5b0987d4fef7`. The existing WIF Provider retained its historical approved SHAs and staged the new workflow SHA while preserving the repository-owner restriction, reusable-workflow identity restriction, and six attribute mappings.
+
+Fresh validation run `34591426903` (job `103237370667`) succeeded on `codex-automation-windows-01`. It passed the Git for Windows Bash, managed-area, WIF, Secret/auth isolation, Local Codex workspace-write, exact path/regular-file/content, protected-path and Git state guards, trusted staging/commit/push, Draft PR creation, and cleanup/residual stages. Trusted automation created implementation commit `e06f7df835e6be4bda21bfebb1cb1fdf191194a4`, branch `codex/ca-p10-032-run-34591426903-attempt-1`, and Draft PR [#8](https://github.com/kusa07/interest-gacha/pull/8) against `main`; its diff contains only `ca-p10-032-validation/validation-34591426903.txt`. Tester and Independent Reviewer both passed with no blocking finding. The runner returned online / idle and managed-area residual validation passed. `CA-P10-032` is Complete. Phase 10 remains `Next`; `CA-P10-033` is next planned and is not started.
 
 ### Initial recommended routing
 
