@@ -565,7 +565,40 @@ Do not resume the GitHub-hosted workspace-write / bwrap investigation automatica
 Phase 10 remains `Next`.
 Phase 11 behavior is not entered merely by adopting the Self-hosted strategy.
 
-## 17. Phase 10 execution planning and grounding
+## 17. Phase 11 sanitized execution result contract
+
+Phase 11 reports a single, fixed-field result record for the execution
+boundary. It is an operational summary, not a copy of stderr or task input.
+Every record contains:
+
+- `RESULT_CLASS`: `INFRASTRUCTURE_RUNNER`, `CODEX_MODEL`,
+  `AUTHENTICATION_SECRET`, `WORKSPACE_GITHUB_PUBLICATION`, `UNKNOWN`, or
+  `SUCCESS`
+- `RESULT_CODE`: the detailed fixed code that produced the grouping
+- `RESULT_CAUSE`: a fixed, sanitized explanation
+- `RESULT_PRESERVED_STATE`: the state deliberately retained rather than
+  overwritten or discarded
+- `RESULT_SAFE_ACTION`: exactly one of `RETRY`, `RECOVER_THEN_RETRY`,
+  `USER_DECISION`, or, for successful validation, `USER_REVIEW`
+
+`scripts/self-hosted/execution-result.sh` is the source of truth for this
+mapping. It accepts only a fixed detailed code and deliberately cannot accept
+raw exception text, task content, repository content, or credential material.
+
+The detailed codes retain useful distinctions within the broad groups. For
+example, runner availability and execution-area cleanup are both
+`INFRASTRUCTURE_RUNNER`, while `CODEX_AUTH_FAILED` and
+`SECRET_VERIFY_FAILED` are both `AUTHENTICATION_SECRET`. A cleanup or residual
+state failure requires `RECOVER_THEN_RETRY`; an unaccepted Codex credential or
+an unknown condition requires `USER_DECISION`. A failed trusted publication
+retains an already-created branch and commit for verified recovery instead of
+rerunning implementation needlessly.
+
+This result contract does not automate recovery, expose sensitive detail, or
+broaden any credential, runner, GitHub, WIF, or publication authority. An
+unsupported code is rejected rather than guessed.
+
+## 18. Phase 10 execution planning and grounding
 
 The detailed Phase 10 implementation work units, read-only grounding gate, STOP conditions, task-result contract, and handoff rules are defined in `PHASE10_EXECUTION_PLAN.md`.
 

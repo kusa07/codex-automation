@@ -1618,21 +1618,21 @@ jobs:
           cli_prefix="${runner_temp}/codex-cli-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           prepared=0
           classify_codex_failure() {
-            local failure_class="unclassified"
+            local result_code="CODEX_EXECUTION_FAILED"
             if [[ -f "${stderr_file}" ]]; then
               if grep -Eqi 'unauthori[sz]ed|authentication|login|credential|token' -- "${stderr_file}"; then
-                failure_class="authentication"
+                result_code="CODEX_AUTH_FAILED"
               elif grep -Eqi 'sandbox|permission denied|access denied|operation not permitted|(^|[^A-Za-z])EACCES([^A-Za-z]|$)|(^|[^A-Za-z])EPERM([^A-Za-z]|$)' -- "${stderr_file}"; then
-                failure_class="sandbox_or_permission"
+                result_code="CODEX_SANDBOX_OR_PERMISSION_FAILED"
               elif grep -Eqi 'unknown option|unrecognized option|unexpected argument|invalid (argument|configuration)|usage:' -- "${stderr_file}"; then
-                failure_class="invalid_cli_or_configuration"
+                result_code="CODEX_CLI_OR_CONFIGURATION_FAILED"
               elif grep -Eqi 'network|connection|connect|timed out|timeout|ECONN|TLS|DNS|transport' -- "${stderr_file}"; then
-                failure_class="network_or_transport"
+                result_code="CODEX_NETWORK_OR_TRANSPORT_FAILED"
               elif grep -Eqi 'model|service unavailable|rate limit|overloaded|internal server|(^|[^0-9])5[0-9]{2}([^0-9]|$)' -- "${stderr_file}"; then
-                failure_class="model_or_service"
+                result_code="CODEX_MODEL_OR_SERVICE_FAILED"
               fi
             fi
-            printf 'Codex exec failed; classification=%s\n' "${failure_class}" >&2
+            "${automation_source}/scripts/self-hosted/execution-result.sh" emit --code "${result_code}" >&2
           }
           emit_authentication_change_status() {
             local baseline_hash=""
