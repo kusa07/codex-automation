@@ -87,6 +87,13 @@ try {
     Invoke-Lifecycle cleanup $dirtyOwned.Root
     if (Test-Path -LiteralPath $dirtyOwned.Path) { throw 'dirty-owned cleanup left workspace residue' }
 
+    $dirtyIssue = New-Workspace 'dirty-issue-owned'
+    $issuePayloadDirectory = Join-Path $dirtyIssue.Path 'ca-p10-033-e2e'
+    New-Item -ItemType Directory -Path $issuePayloadDirectory -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $issuePayloadDirectory 'issue-9.txt') -Value 'CA-P10-033 E2E validation from Issue #9' -NoNewline
+    Invoke-Lifecycle cleanup $dirtyIssue.Root
+    if (Test-Path -LiteralPath $dirtyIssue.Path) { throw 'dirty-issue-owned cleanup left workspace residue' }
+
     $dirtyUnrelated = New-Workspace 'dirty-unrelated'
     Set-Content -LiteralPath (Join-Path $dirtyUnrelated.Path 'unrelated.txt') -Value 'unrelated' -NoNewline
     Assert-Fails 'dirty unrelated cleanup' { Invoke-Lifecycle cleanup $dirtyUnrelated.Root }

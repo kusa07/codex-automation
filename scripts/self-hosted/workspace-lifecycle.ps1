@@ -106,7 +106,7 @@ function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipM
         $status = @($status | Where-Object { $_ -ne '?? .codex-workspace-owned.json' })
     }
     if ($status.Count -eq 0) { return }
-    if (-not $AllowSingleDirtyPayload -or $status.Count -ne 1 -or $status[0] -notmatch '^\?\? ca-p10-032-validation/validation-[0-9]+\.txt$') { Fail 'workspace base state is not clean' }
+    if (-not $AllowSingleDirtyPayload -or $status.Count -ne 1 -or $status[0] -notmatch '^\?\? (ca-p10-032-validation/validation-[0-9]+\.txt|ca-p10-033-e2e/issue-[1-9][0-9]*\.txt)$') { Fail 'workspace base state is not clean' }
     $payloadPath = Join-Path $WorkspacePath ($status[0].Substring(3))
     if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) { Fail 'failed payload artifact is not a regular file' }
     Assert-NoReparsePath $payloadPath
