@@ -55,13 +55,13 @@ Before beginning a new phase:
 | Phase 7 | Repository-level serialization and queueing | Complete |
 | Phase 8 | Safe `auth.json` update and persistence lifecycle | Complete |
 | Phase 9 | Issue → `codex-ready` → validated Codex task input | Complete |
-| Phase 10 | Codex implementation → branch / commit / Pull Request | Next |
-| Phase 11 | Failure handling, result reporting, and end-to-end validation | Planned |
+| Phase 10 | Codex implementation → branch / commit / Pull Request | Complete |
+| Phase 11 | Failure handling, result reporting, and end-to-end validation | Next |
 | Phase 12 | Multi-repository rollout and operational use | Planned |
 
 Current authoritative position:
 
-> Phase 9 is complete. Phase 10 is the next implementation phase.
+> Phase 10 is complete. Phase 11 is the next implementation phase.
 
 ## 4. Phase definitions
 
@@ -381,7 +381,7 @@ Completion criteria:
 
 Status:
 
-Next.
+Complete.
 
 ---
 
@@ -389,30 +389,30 @@ Next.
 
 Purpose:
 
-Turn the working execution path into a recoverable and understandable operational system.
+Make the proven execution path practical for personal operation: when a run fails, make the failure understandable, preserve known-good state, and make the safe next action clear without requiring exhaustive failure automation.
 
 Planned outcomes:
 
-- classified infrastructure failures
-- classified Codex failures
-- classified authentication failures
-- classified Secret persistence failures
-- classified GitHub publication failures
-- sanitized execution reporting
-- recovery procedures
-- end-to-end tests across success and representative failure paths
+- practical failure grouping for infrastructure / runner, Codex / model, authentication / Secret, and workspace / GitHub publication failures
+- sanitized result reporting that states whether the next action is retry, recovery-then-retry, or User decision
+- preservation of known-good authentication state and recoverable GitHub work
+- simple recovery procedures for expected interruption and residual-state cases
+- representative validation of a small set of likely failure paths
+- one final Issue → Codex → Draft Pull Request smoke validation after Phase 11 changes
+
+Phase 11 is intentionally scoped for personal use. Exhaustive failure taxonomy, automatic retry engines, self-healing automation, monitoring dashboards, and all-combination failure testing are not required for completion. They may be added later only if real operation shows a need.
 
 Completion criteria:
 
-- failures can be distinguished by class
-- known-good authentication state is preserved during failure
-- recoverable GitHub work is not unnecessarily discarded
-- operational procedures exist for the expected failure modes
-- a complete Issue → Codex → PR test succeeds
+- a failed run can be assigned to a practical failure class, or clearly reported as unknown
+- known-good authentication state and unrelated repository / execution state are preserved during failure
+- the result report identifies the safe next action: retry, recovery-then-retry, or User decision
+- representative likely failure paths are validated without requiring exhaustive combinations
+- a final Issue → Codex → Draft Pull Request smoke test succeeds
 
 Status:
 
-Planned.
+Next.
 
 ---
 
