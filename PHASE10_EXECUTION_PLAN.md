@@ -136,7 +136,7 @@ Phase 10は、現時点では以下の5つのcore work unitで進める。
 | `CA-P10-029` | C + D | 1 | Self-hosted runner / Git Bash / Mutex / availability / inert dispatch | 重 | Complete |
 | `CA-P10-030` | E + F + G | 2 | Workspace lifecycle + Windows/Git Bash adaptation + WIF/Secret + isolated Local Codex read-only | 重 | Complete |
 | `CA-P10-032` | H + I | 3 | workspace-write + existing trusted publication再接続 | 重 | Complete |
-| `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Planned |
+| `CA-P10-033` | J | 4 | Issue → Local Codex → Draft PR E2E validation | 中〜重 | Complete |
 
 計画上の5件を機械的に守ること自体は目的ではない。
 
@@ -957,6 +957,14 @@ Fresh validation run `34591426903` (job `103237370667`) succeeded on `codex-auto
 を報告する。
 
 Phase status更新と次Phase開始はUserの明示判断を待つ。
+
+### Completion record
+
+`CA-P10-033_001` completed the production-shaped Issue-to-Draft-PR E2E validation without changing the Local Codex / trusted-publication authority boundary. Reusable workflow execution commit `7a92475d6c73bd8cc6add9b247442e14edee3d48` connected the existing `codex-ready` Issue contract to the Windows self-hosted managed execution path, removed the unavailable runner-local `jq` dependency in favor of the already-required PowerShell runtime, made the no-terminal-newline validation instruction explicit, and extended inactive failed-workspace recovery only to one exact CA-P10-033 validation artifact under the existing ownership, identity, inactive-state, and non-reparse checks. Caller `kusa07/interest-gacha` pinned that workflow through commit `69de2eacff486b8e43a5e1f5888c511140d571c3`. The WIF Provider retained the repository-owner and reusable-workflow identity restrictions, all six attribute mappings, and the historical approved SHA set while approving the execution commit.
+
+Dedicated Issue [#9](https://github.com/kusa07/interest-gacha/issues/9) triggered successful `issues` run `34603976177` (job `103277817657`) on `codex-automation-windows-01`. The run passed Issue read-back, Git for Windows Bash, managed-area locking, WIF, exactly-one-enabled Secret version validation, isolated Local Codex workspace-write, exact path/regular-file/39-byte content validation with no terminal newline, protected-path and Git-state guards, trusted staging/commit/push, Draft PR creation, and cleanup/residual validation. Trusted automation created implementation commit `512b7bdd0878cf90b49999a6ce0e7fd7de859608`, branch `codex/issue-9-run-34603976177-attempt-1`, and Draft PR [#10](https://github.com/kusa07/interest-gacha/pull/10) against `main`; the diff contains only `ca-p10-033-e2e/issue-9.txt`, and no automatic merge was configured. Tester and Independent Reviewer passed with no blocking finding.
+
+`CA-P10-033` is Complete. The five `ROADMAP.md` Phase 10 completion criteria have current E2E evidence, so Phase 10 is ready for the User's completion decision. `ROADMAP.md` remains `Next`; Phase 11 is not started.
 
 ### Initial recommended routing
 
