@@ -48,7 +48,9 @@ if bash "$helper" emit --code CODEX_AUTH_FAILED extra >/dev/null 2>&1; then
   exit 1
 fi
 workflow="${script_dir}/../../.github/workflows/codex-run.yml"
-grep -F 'execution-result.sh" emit --code "${result_code}"' "$workflow" >/dev/null
+grep -F 'execution-result.sh" emit --code "${pending_code}"' "$workflow" >/dev/null
+grep -F 'mv -- "${handoff_tmp}" "${result_handoff_file}"' "$workflow" >/dev/null
+! grep -F 'result_emitted' "$workflow" >/dev/null
 grep -F "result_code='SECRET_STATE_AMBIGUOUS'" "$workflow" >/dev/null
 grep -F "result_code='SELF_HOSTED_CLEANUP_FAILED'" "$workflow" >/dev/null
 grep -F "result_code='SUCCESS'" "$workflow" >/dev/null

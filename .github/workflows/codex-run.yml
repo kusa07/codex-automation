@@ -1909,6 +1909,8 @@ jobs:
           CONNECTIVITY_SECRET_FILE: ${{ runner.temp }}/codex-connectivity-secret.json
           AUTHORITATIVE_VERSION_FILE: ${{ runner.temp }}/codex-authoritative-version.txt
           PAYLOAD_STATUS_FILE: ${{ runner.temp }}/codex-write-payload.status
+          RESULT_PENDING_FILE: ${{ runner.temp }}/codex-write-result-${{ github.run_id }}-${{ github.run_attempt }}.pending
+          RESULT_OWNER_FILE: ${{ runner.temp }}/codex-write-result-${{ github.run_id }}-${{ github.run_attempt }}.owner
           WORKSPACE_NAME: codex-workspace-write-${{ github.run_id }}-${{ github.run_attempt }}
           EXECUTION_ID: repo-${{ github.repository_id }}-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
         run: |
@@ -1937,6 +1939,8 @@ jobs:
           base_sha="$5"
           result_file="$(cygpath -u -- "$6")"
           expected_file="$(cygpath -u -- "$7")"
+          result_handoff_file="$(cygpath -u -- "$8")"
+          result_handoff_tmp="${result_handoff_file}.tmp"
           managed_root="$(cygpath -u -- "${CODEX_AUTOMATION_ROOT}")"
           workspace_path="${managed_root}/workspaces/${workspace_name}"
           codex_home="${managed_root}/codex-home/${workspace_name}"
@@ -1954,12 +1958,6 @@ jobs:
           final_sha=""
           prepared=0
           result_code='UNKNOWN_FAILURE'
-          result_emitted=0
-          emit_result() {
-            (( result_emitted )) && return 0
-            "${automation_source}/scripts/self-hosted/execution-result.sh" emit --code "${result_code}" >&2 || true
-            result_emitted=1
-          }
           cleanup() {
             status=$?
             set +e
@@ -1992,7 +1990,13 @@ jobs:
               result_code='SUCCESS'
             fi
             set -e
-            emit_result
+            handoff_tmp="${result_handoff_file}.tmp"
+            [[ ! -e "${result_handoff_file}" && ! -L "${result_handoff_file}" && ! -e "${handoff_tmp}" && ! -L "${handoff_tmp}" ]] || {
+              status=1
+              result_code='SELF_HOSTED_CLEANUP_FAILED'
+            }
+            printf '%s\n' "${EXECUTION_ID}|${GITHUB_REPOSITORY}|${base_sha}|${result_code}" > "${handoff_tmp}"
+            mv -- "${handoff_tmp}" "${result_handoff_file}"
             exit "${status}"
           }
           trap cleanup EXIT
@@ -2182,7 +2186,19 @@ jobs:
           PAYLOAD
           chmod 700 -- "${CODEX_PAYLOAD_FILE}"
           printf '%s\n' 'WRITE_STAGE=payload_launch'
-          if "${automation_source}/scripts/self-hosted/run-local-execution.sh" run --repository-id "${GITHUB_REPOSITORY_ID}" --run-id "${GITHUB_RUN_ID}" --attempt "${GITHUB_RUN_ATTEMPT}" --payload-path "C:/Program Files/Git/bin/bash.exe" --payload-arg "$(cygpath -aw "${CODEX_PAYLOAD_FILE}")" --payload-arg "$(cygpath -aw "${automation_source}")" --payload-arg "$(cygpath -aw "${caller_source}")" --payload-arg "${WORKSPACE_NAME}" --payload-arg "${EXECUTION_ID}" --payload-arg "$(git -C "${caller_source}" rev-parse HEAD)" --payload-arg "${CODEX_RESULT_FILE}" --payload-arg "$(cygpath -aw "${expected_file}")"; then
+          owner_nonce="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          owner_context="${EXECUTION_ID}|${GITHUB_REPOSITORY}|$(git -C "${caller_source}" rev-parse HEAD)|${owner_nonce}"
+          owner_tmp="${RESULT_OWNER_FILE}.tmp"
+          expected_pending_path="${RESULT_PENDING_FILE}.expected"
+          expected_owner_path="${RESULT_OWNER_FILE}.expected"
+          for handoff_path in "${RESULT_PENDING_FILE}" "${RESULT_PENDING_FILE}.tmp" "${expected_pending_path}" "${RESULT_OWNER_FILE}" "${owner_tmp}" "${expected_owner_path}"; do
+            [[ ! -e "${handoff_path}" && ! -L "${handoff_path}" ]] || exit 1
+            powershell.exe -NoProfile -NonInteractive -Command '$p=$args[0]; if (Test-Path -LiteralPath $p -PathType Any) { if ((Get-Item -LiteralPath $p -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { exit 1 } }' -- "${handoff_path}"
+          done
+          ( set -C; printf '%s\n' "${owner_context}" > "${owner_tmp}" )
+          mv -- "${owner_tmp}" "${RESULT_OWNER_FILE}"
+          printf 'RESULT_OWNER_NONCE=%s\n' "${owner_nonce}" >> "${GITHUB_ENV}"
+          if "${automation_source}/scripts/self-hosted/run-local-execution.sh" run --repository-id "${GITHUB_REPOSITORY_ID}" --run-id "${GITHUB_RUN_ID}" --attempt "${GITHUB_RUN_ATTEMPT}" --payload-path "C:/Program Files/Git/bin/bash.exe" --payload-arg "$(cygpath -aw "${CODEX_PAYLOAD_FILE}")" --payload-arg "$(cygpath -aw "${automation_source}")" --payload-arg "$(cygpath -aw "${caller_source}")" --payload-arg "${WORKSPACE_NAME}" --payload-arg "${EXECUTION_ID}" --payload-arg "$(git -C "${caller_source}" rev-parse HEAD)" --payload-arg "${CODEX_RESULT_FILE}" --payload-arg "$(cygpath -aw "${expected_file}")" --payload-arg "$(cygpath -aw "${RESULT_PENDING_FILE}")"; then
             [[ -f "${PAYLOAD_STATUS_FILE}" && "$(<"${PAYLOAD_STATUS_FILE}")" == PASS ]]
           else
             exit $?
@@ -2192,9 +2208,64 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          rm -f -- "${RUNNER_TEMP}/codex-connectivity-secret.json" "${RUNNER_TEMP}/codex-authoritative-version.txt" "${RUNNER_TEMP}/codex-write-result.txt" "${RUNNER_TEMP}/codex-write-payload.sh" "${RUNNER_TEMP}/codex-write-payload.status" "${RUNNER_TEMP}/codex-write-task.md" "${RUNNER_TEMP}/codex-write-issue.json" "${RUNNER_TEMP}/codex-write-expected-path.txt" "${RUNNER_TEMP}/codex-write-expected-content.txt" "${RUNNER_TEMP}/codex-write.stderr" "${RUNNER_TEMP}/codex-write-auth-before.sha256" "${RUNNER_TEMP}/codex-write-expected.txt" "${RUNNER_TEMP}/codex-write-askpass.sh" "${RUNNER_TEMP}/codex-google-credentials.json"
-          "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/manage-execution-area.sh" preflight
-          [[ ! -e "${CODEX_AUTOMATION_ROOT}/state/current-run.json" ]]
+          pending_file="${RUNNER_TEMP}/codex-write-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.pending"
+          pending_tmp="${pending_file}.tmp"
+          pending_expected_file="${pending_file}.expected"
+          owner_file="${RUNNER_TEMP}/codex-write-result-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.owner"
+          owner_expected_file="${owner_file}.expected"
+          caller_source="${GITHUB_WORKSPACE}/caller-source"
+          expected_prefix="repo-${GITHUB_REPOSITORY_ID}-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}|${GITHUB_REPOSITORY}|$(git -C "${caller_source}" rev-parse HEAD)"
+          owner_expected="${expected_prefix}|${RESULT_OWNER_NONCE:-}"
+          owner_owned=0
+          if [[ -n "${RESULT_OWNER_NONCE:-}" && -f "${owner_file}" && ! -L "${owner_file}" ]]; then
+            if [[ ! -e "${owner_expected_file}" && ! -L "${owner_expected_file}" ]] && ( set -C; printf '%s\n' "${owner_expected}" > "${owner_expected_file}" ); then
+              cmp -s -- "${owner_file}" "${owner_expected_file}" && owner_owned=1
+            else
+              pending_ambiguous=1
+            fi
+          fi
+          pending_code=''
+          pending_ambiguous=0
+          cleanup_failed=0
+          set +e
+          for candidate_code in SUCCESS RUNNER_OFFLINE RUNNER_BUSY RUNNER_INELIGIBLE UNKNOWN_INFRASTRUCTURE_FAILURE SELF_HOSTED_PREFLIGHT_FAILED SELF_HOSTED_LOCK_ABANDONED SELF_HOSTED_STATE_INVALID SELF_HOSTED_CLEANUP_FAILED OIDC_AUTH_FAILED SECRET_READ_FAILED CODEX_AUTH_FAILED SECRET_STATE_AMBIGUOUS SECRET_WRITE_FAILED SECRET_VERIFY_FAILED CODEX_MODEL_OR_SERVICE_FAILED CODEX_NETWORK_OR_TRANSPORT_FAILED CODEX_SANDBOX_OR_PERMISSION_FAILED CODEX_CLI_OR_CONFIGURATION_FAILED CODEX_EXECUTION_FAILED WORKSPACE_VALIDATION_FAILED GITHUB_PUBLISH_FAILED UNKNOWN_FAILURE; do
+            candidate_expected_file="${pending_expected_file}.${candidate_code}"
+            [[ ! -e "${candidate_expected_file}" && ! -L "${candidate_expected_file}" ]] || { pending_ambiguous=1; break; }
+            ( set -C; printf '%s\n' "${expected_prefix}|${candidate_code}" > "${candidate_expected_file}" ) || { pending_ambiguous=1; break; }
+            if [[ -f "${pending_file}" ]] && cmp -s -- "${pending_file}" "${candidate_expected_file}"; then
+              pending_code="${candidate_code}"
+              rm -f -- "${candidate_expected_file}" || cleanup_failed=1
+              break
+            fi
+            rm -f -- "${candidate_expected_file}" || cleanup_failed=1
+          done
+          pending_owned=0
+          if (( owner_owned == 0 )); then pending_code=''; pending_ambiguous=1; fi
+          if [[ -e "${pending_file}" || -L "${pending_file}" ]]; then
+            if [[ -n "${pending_code}" && ! -L "${pending_file}" ]]; then
+              pending_owned=1
+            else
+              pending_ambiguous=1
+            fi
+          fi
+          [[ ! -e "${pending_tmp}" && ! -L "${pending_tmp}" ]] || pending_ambiguous=1
+          rm -f -- "${RUNNER_TEMP}/codex-connectivity-secret.json" "${RUNNER_TEMP}/codex-authoritative-version.txt" "${RUNNER_TEMP}/codex-write-result.txt" "${RUNNER_TEMP}/codex-write-payload.sh" "${RUNNER_TEMP}/codex-write-payload.status" "${RUNNER_TEMP}/codex-write-task.md" "${RUNNER_TEMP}/codex-write-issue.json" "${RUNNER_TEMP}/codex-write-expected-path.txt" "${RUNNER_TEMP}/codex-write-expected-content.txt" "${RUNNER_TEMP}/codex-write.stderr" "${RUNNER_TEMP}/codex-write-auth-before.sha256" "${RUNNER_TEMP}/codex-write-expected.txt" "${RUNNER_TEMP}/codex-write-askpass.sh" "${RUNNER_TEMP}/codex-google-credentials.json" || cleanup_failed=1
+          if (( owner_owned )); then rm -f -- "${pending_expected_file}" "${owner_expected_file}" "${owner_file}" || cleanup_failed=1; fi
+          if (( pending_owned )); then
+            rm -f -- "${pending_file}" || cleanup_failed=1
+          fi
+          (( pending_ambiguous == 0 )) || cleanup_failed=1
+          "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/manage-execution-area.sh" preflight || cleanup_failed=1
+          [[ ! -e "${CODEX_AUTOMATION_ROOT}/state/current-run.json" ]] || cleanup_failed=1
+          if (( cleanup_failed != 0 )); then
+            "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/execution-result.sh" emit --code SELF_HOSTED_CLEANUP_FAILED || true
+            exit 1
+          fi
+          if [[ -n "${pending_code}" ]]; then
+            "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/execution-result.sh" emit --code "${pending_code}"
+          else
+            "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/execution-result.sh" emit --code SELF_HOSTED_CLEANUP_FAILED
+          fi
           echo "Self-hosted workspace-write validation cleanup passed"
 
 
