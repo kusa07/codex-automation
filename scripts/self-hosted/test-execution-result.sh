@@ -55,6 +55,8 @@ grep -F "result_code='SUCCESS'" "$workflow" >/dev/null
 grep -F 'if ! gcloud secrets versions list' "$workflow" >/dev/null
 grep -F "result_code='SECRET_READ_FAILED'" "$workflow" >/dev/null
 grep -F 'enabled_versions_file' "$workflow" >/dev/null
+grep -F 'classify-codex-failure.sh' "$workflow" >/dev/null
+! grep -F "|token'" "$workflow" >/dev/null
 grep -F 'set +e' "$workflow" >/dev/null
 grep -F 'cleanup_failed=1' "$workflow" >/dev/null
 printf '%s\n' 'execution result contract tests passed'
