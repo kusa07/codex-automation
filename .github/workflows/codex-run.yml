@@ -2193,7 +2193,7 @@ jobs:
           expected_owner_path="${RESULT_OWNER_FILE}.expected"
           for handoff_path in "${RESULT_PENDING_FILE}" "${RESULT_PENDING_FILE}.tmp" "${expected_pending_path}" "${RESULT_OWNER_FILE}" "${owner_tmp}" "${expected_owner_path}"; do
             [[ ! -e "${handoff_path}" && ! -L "${handoff_path}" ]] || exit 1
-            powershell.exe -NoProfile -NonInteractive -Command '$p=$args[0]; if (Test-Path -LiteralPath $p -PathType Any) { if ((Get-Item -LiteralPath $p -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { exit 1 } }' -- "${handoff_path}"
+            HANDOFF_PATH="$(cygpath -aw -- "${handoff_path}")" powershell.exe -NoProfile -NonInteractive -Command '$p=$env:HANDOFF_PATH; if (Test-Path -LiteralPath $p -PathType Any) { if ((Get-Item -LiteralPath $p -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { exit 1 } }'
           done
           ( set -C; printf '%s\n' "${owner_context}" > "${owner_tmp}" )
           mv -- "${owner_tmp}" "${RESULT_OWNER_FILE}"
