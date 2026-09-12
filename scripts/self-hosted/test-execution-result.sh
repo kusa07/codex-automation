@@ -27,6 +27,7 @@ expect_result SELF_HOSTED_CLEANUP_FAILED INFRASTRUCTURE_RUNNER RECOVER_THEN_RETR
 expect_result OIDC_AUTH_FAILED AUTHENTICATION_SECRET RETRY
 expect_result SECRET_READ_FAILED AUTHENTICATION_SECRET RETRY
 expect_result CODEX_AUTH_FAILED AUTHENTICATION_SECRET USER_DECISION
+expect_result SECRET_STATE_AMBIGUOUS AUTHENTICATION_SECRET USER_DECISION
 expect_result SECRET_WRITE_FAILED AUTHENTICATION_SECRET RECOVER_THEN_RETRY
 expect_result SECRET_VERIFY_FAILED AUTHENTICATION_SECRET RECOVER_THEN_RETRY
 expect_result CODEX_MODEL_OR_SERVICE_FAILED CODEX_MODEL RETRY
@@ -46,4 +47,14 @@ if bash "$helper" emit --code CODEX_AUTH_FAILED extra >/dev/null 2>&1; then
   printf '%s\n' 'unexpected arguments were accepted' >&2
   exit 1
 fi
+workflow="${script_dir}/../../.github/workflows/codex-run.yml"
+grep -F 'execution-result.sh" emit --code "${result_code}"' "$workflow" >/dev/null
+grep -F "result_code='SECRET_STATE_AMBIGUOUS'" "$workflow" >/dev/null
+grep -F "result_code='SELF_HOSTED_CLEANUP_FAILED'" "$workflow" >/dev/null
+grep -F "result_code='SUCCESS'" "$workflow" >/dev/null
+grep -F 'if ! gcloud secrets versions list' "$workflow" >/dev/null
+grep -F "result_code='SECRET_READ_FAILED'" "$workflow" >/dev/null
+grep -F 'enabled_versions_file' "$workflow" >/dev/null
+grep -F 'set +e' "$workflow" >/dev/null
+grep -F 'cleanup_failed=1' "$workflow" >/dev/null
 printf '%s\n' 'execution result contract tests passed'

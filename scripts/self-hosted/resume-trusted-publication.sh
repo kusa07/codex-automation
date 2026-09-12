@@ -5,7 +5,7 @@ set -euo pipefail
 
 fail() { printf '%s\n' 'RESUME_PUBLICATION_REJECTED' >&2; exit 1; }
 usage() {
-  printf '%s\n' 'usage: resume-trusted-publication.sh --repository OWNER/REPO --base-branch BRANCH --base-sha SHA --task-branch BRANCH --expected-final-sha SHA --issue-number NUMBER --mode issue|validation [--dry-run]' >&2
+  printf '%s\n' 'usage: resume-trusted-publication.sh --repository OWNER/REPO --base-branch BRANCH --base-sha SHA --task-branch BRANCH --expected-final-sha SHA --mode issue|validation [--issue-number NUMBER] [--dry-run]' >&2
   exit 64
 }
 
@@ -27,52 +27,46 @@ done
 [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail
 [[ "$base_branch" =~ ^[A-Za-z0-9._/-]+$ && "$base_branch" != /* && "$base_branch" != */ ]] || fail
 [[ "$base_sha" =~ ^[0-9a-f]{40}$ && "$final_sha" =~ ^[0-9a-f]{40}$ ]] || fail
-[[ "$issue_number" =~ ^[1-9][0-9]*$ ]] || fail
 [[ "$mode" == issue || "$mode" == validation ]] || fail
 if [[ "$mode" == issue ]]; then
+  [[ "$issue_number" =~ ^[1-9][0-9]*$ ]] || fail
   [[ "$task_branch" =~ ^codex/issue-${issue_number}-run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$ ]] || fail
 else
   # Validation branches intentionally have no Issue identity and therefore do
   # not perform or invent an Issue read-back.
-  [[ "$task_branch" =~ ^codex/ca-p10-032-run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$ ]] || fail
+  [[ -z "$issue_number" ]] || fail
+  [[ "$task_branch" =~ ^codex/ca-(p10-032|p11-003)-run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$ ]] || fail
 fi
-run_id="${BASH_REMATCH[1]}"
+if [[ "$mode" == issue ]]; then
+  run_id="${BASH_REMATCH[1]}"
+else
+  run_id="${BASH_REMATCH[2]}"
+fi
 repository_owner="${repository%%/*}"
 
 if [[ "$mode" == issue ]]; then
-  issue_json="$(gh api "repos/${repository}/issues/${issue_number}")" || fail
-  issue_readback_number="$(jq -r '.number // empty' <<<"$issue_json")"
-  issue_state="$(jq -r '.state // empty' <<<"$issue_json")"
-  issue_is_pr="$(jq -r 'if has("pull_request") then "true" else "false" end' <<<"$issue_json")"
-  issue_has_codex_ready="$(jq -r 'any(.labels[]?.name; . == "codex-ready")' <<<"$issue_json")"
-  issue_title="$(jq -r '.title // empty' <<<"$issue_json")"
-  issue_body="$(jq -r '.body // empty' <<<"$issue_json")"
-  [[ "$issue_readback_number" == "$issue_number" && "$issue_state" == open && "$issue_is_pr" == false && "$issue_has_codex_ready" == true && -n "$issue_title" && -n "$issue_body" ]] || fail
+  issue_endpoint="repos/${repository}/issues/${issue_number}"
+  issue_snapshot="$(gh api "$issue_endpoint" --jq '[((.number // 0) | tostring), (.state // ""), (if has("pull_request") then "true" else "false" end), (if any(.labels[]?.name; . == "codex-ready") then "true" else "false" end), (if (.title // "") != "" then "true" else "false" end), (if (.body // "") != "" then "true" else "false" end)] | @tsv')" || fail
+  IFS=$'\t' read -r issue_readback_number issue_state issue_is_pr issue_has_codex_ready issue_has_title issue_has_body <<<"$issue_snapshot"
+  [[ "$issue_readback_number" == "$issue_number" && "$issue_state" == open && "$issue_is_pr" == false && "$issue_has_codex_ready" == true && "$issue_has_title" == true && "$issue_has_body" == true ]] || fail
 fi
 
-branch_json="$(gh api "repos/${repository}/git/ref/heads/${task_branch}")" || fail
-branch_sha="$(jq -r '.object.sha // empty' <<<"$branch_json")"
+branch_sha="$(gh api "repos/${repository}/git/ref/heads/${task_branch}" --jq '.object.sha // empty')" || fail
 [[ "$branch_sha" == "$final_sha" ]] || fail
 
-commit_json="$(gh api "repos/${repository}/git/commits/${final_sha}")" || fail
-commit_sha="$(jq -r '.sha // empty' <<<"$commit_json")"
-parent_count="$(jq -r '(.parents // []) | length' <<<"$commit_json")"
-parent_sha="$(jq -r '.parents[0].sha // empty' <<<"$commit_json")"
+commit_endpoint="repos/${repository}/git/commits/${final_sha}"
+commit_snapshot="$(gh api "$commit_endpoint" --jq '[((.sha // "")), (((.parents // []) | length) | tostring), (.parents[0].sha // "")] | @tsv')" || fail
+IFS=$'\t' read -r commit_sha parent_count parent_sha <<<"$commit_snapshot"
 [[ "$commit_sha" == "$final_sha" && "$parent_count" == 1 && "$parent_sha" == "$base_sha" ]] || fail
 
-base_json="$(gh api "repos/${repository}/git/ref/heads/${base_branch}")" || fail
-current_base_sha="$(jq -r '.object.sha // empty' <<<"$base_json")"
+current_base_sha="$(gh api "repos/${repository}/git/ref/heads/${base_branch}" --jq '.object.sha // empty')" || fail
 [[ "$current_base_sha" == "$base_sha" ]] || fail
 
-pr_json="$(gh api --method GET "repos/${repository}/pulls" -f state=all -f head="${repository_owner}:${task_branch}")" || fail
-pr_count="$(jq -r 'length' <<<"$pr_json")"
+pr_endpoint="repos/${repository}/pulls"
+pr_snapshot="$(gh api --method GET "$pr_endpoint" -f state=all -f head="${repository_owner}:${task_branch}" --jq 'if length == 0 then "0" elif length == 1 then ["1", (if .[0].draft then "true" else "false" end), (.[0].base.ref // ""), (.[0].head.ref // ""), (.[0].head.repo.full_name // ""), (.[0].head.sha // "")] | @tsv else [(length | tostring)] | @tsv end')" || fail
+IFS=$'\t' read -r pr_count existing_draft existing_base existing_head existing_head_repo existing_head_sha <<<"$pr_snapshot"
 [[ "$pr_count" =~ ^[0-9]+$ ]] || fail
 if [[ "$pr_count" == 1 ]]; then
-  existing_draft="$(jq -r '.[0].draft // false' <<<"$pr_json")"
-  existing_base="$(jq -r '.[0].base.ref // empty' <<<"$pr_json")"
-  existing_head="$(jq -r '.[0].head.ref // empty' <<<"$pr_json")"
-  existing_head_repo="$(jq -r '.[0].head.repo.full_name // empty' <<<"$pr_json")"
-  existing_head_sha="$(jq -r '.[0].head.sha // empty' <<<"$pr_json")"
   [[ "$existing_draft" == true && "$existing_base" == "$base_branch" && "$existing_head" == "$task_branch" && "$existing_head_repo" == "$repository" && "$existing_head_sha" == "$final_sha" ]] || fail
   printf '%s\n' 'RESUME_DRAFT_PR_ALREADY_EXISTS'
   exit 0

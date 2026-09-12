@@ -40,10 +40,15 @@ case "$code" in
     preserved_state='known-good Secret state was not modified'
     action='RETRY'
     ;;
-  CODEX_AUTH_FAILED)
+  CODEX_AUTH_FAILED|SECRET_STATE_AMBIGUOUS)
     result_class='AUTHENTICATION_SECRET'
-    cause='stored Codex authentication was not accepted'
-    preserved_state='known-good Secret state was not replaced'
+    if [[ "$code" == SECRET_STATE_AMBIGUOUS ]]; then
+      cause='Secret enabled-version state was ambiguous'
+      preserved_state='known-good Secret state was not modified'
+    else
+      cause='stored Codex authentication was not accepted'
+      preserved_state='known-good Secret state was not replaced'
+    fi
     action='USER_DECISION'
     ;;
   SECRET_WRITE_FAILED|SECRET_VERIFY_FAILED)

@@ -1960,33 +1960,66 @@ jobs:
           expected_content_file="${runner_temp}/codex-write-expected-content.txt"
           stderr_file="${runner_temp}/codex-write.stderr"
           auth_hash_file="${runner_temp}/codex-write-auth-before.sha256"
+          enabled_versions_file="${runner_temp}/codex-write-enabled-versions.txt"
           askpass_file="${runner_temp}/codex-write-askpass.sh"
           cli_prefix="${runner_temp}/codex-cli-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           final_sha=""
           prepared=0
+          result_code='UNKNOWN_FAILURE'
+          result_emitted=0
+          emit_result() {
+            (( result_emitted )) && return 0
+            "${automation_source}/scripts/self-hosted/execution-result.sh" emit --code "${result_code}" >&2 || true
+            result_emitted=1
+          }
           cleanup() {
             status=$?
-            if cd -- "${automation_source}" && (( prepared )); then
-              cleanup_args=(cleanup --active-run --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" --workspace-name "${workspace_name}" --execution-id "${execution_id}")
-              [[ -z "${final_sha}" ]] || cleanup_args+=(--expected-final-sha "${final_sha}")
-              "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" "${cleanup_args[@]}" >/dev/null || status=1
-            else
-              status=1
+            set +e
+            cleanup_failed=0
+            if (( prepared )); then
+              if cd -- "${automation_source}"; then
+                cleanup_args=(cleanup --active-run --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" --workspace-name "${workspace_name}" --execution-id "${execution_id}")
+                [[ -z "${final_sha}" ]] || cleanup_args+=(--expected-final-sha "${final_sha}")
+                "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" "${cleanup_args[@]}" >/dev/null
+                [[ $? -eq 0 ]] || {
+                  status=1
+                  cleanup_failed=1
+                }
+              else
+                status=1
+                cleanup_failed=1
+              fi
             fi
-            rm -f -- "${secret_file}" "${version_file}" "${auth_hash_file}" "${stderr_file}" "${task_file}" "${askpass_file}" "${result_file}"
-            rm -rf -- "${cli_prefix}"
-            rm -rf -- "${codex_home}"
-            [[ ! -e "${cli_prefix}" ]] || status=1
-            [[ ! -e "${codex_home}" ]] || status=1
+            rm -f -- "${secret_file}" "${version_file}" "${auth_hash_file}" "${enabled_versions_file}" "${stderr_file}" "${task_file}" "${askpass_file}" "${result_file}" || cleanup_failed=1
+            rm -rf -- "${cli_prefix}" || cleanup_failed=1
+            rm -rf -- "${codex_home}" || cleanup_failed=1
+            if [[ -e "${cli_prefix}" || -e "${codex_home}" ]]; then
+              status=1
+              cleanup_failed=1
+            fi
+            if (( cleanup_failed != 0 )); then
+              status=1
+              result_code='SELF_HOSTED_CLEANUP_FAILED'
+            elif [[ "${result_code}" == UNKNOWN_FAILURE ]]; then
+              result_code='SUCCESS'
+            fi
+            set -e
+            emit_result
             exit "${status}"
           }
           trap cleanup EXIT
+          result_code='SECRET_STATE_AMBIGUOUS'
           printf '%s\n' 'WRITE_STAGE=secret_preflight_start'
-          mapfile -t enabled_versions < <(gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --filter='state=ENABLED' --format='value(name.basename())')
+          if ! gcloud secrets versions list "${CONNECTIVITY_SECRET_ID}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --filter='state=ENABLED' --format='value(name.basename())' > "${enabled_versions_file}"; then
+            result_code='SECRET_READ_FAILED'
+            exit 1
+          fi
+          mapfile -t enabled_versions < "${enabled_versions_file}"
           for index in "${!enabled_versions[@]}"; do enabled_versions[index]="${enabled_versions[index]%$'\r'}"; done
           [[ ${#enabled_versions[@]} -eq 1 && "${enabled_versions[0]}" =~ ^[1-9][0-9]*$ ]] || exit 1
           printf '%s\n' 'WRITE_STAGE=secret_preflight_complete'
           printf '%s\n' "${enabled_versions[0]}" > "${version_file}"
+          result_code='SECRET_READ_FAILED'
           printf '%s\n' 'WRITE_STAGE=secret_access_start'
           gcloud secrets versions access "${enabled_versions[0]}" --project="${GOOGLE_CLOUD_PROJECT_ID}" --secret="${CONNECTIVITY_SECRET_ID}" --out-file="${secret_file}" --quiet
           [[ -s "${secret_file}" ]] || exit 1
@@ -1996,15 +2029,19 @@ jobs:
           printf '%s\n' 'cli_auth_credentials_store = "file"' > "${codex_home}/config.toml"
           chmod 600 -- "${codex_home}/config.toml"
           sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1 > "${auth_hash_file}"
+          result_code='CODEX_CLI_OR_CONFIGURATION_FAILED'
           npm install --prefix "${cli_prefix}" "@openai/codex@${CODEX_VERSION}" >/dev/null
           export PATH="${cli_prefix}/node_modules/.bin:${PATH}"
           [[ "$(CODEX_HOME="${codex_home}" codex --version)" == "codex-cli ${CODEX_VERSION}" ]]
+          result_code='CODEX_AUTH_FAILED'
           CODEX_HOME="${codex_home}" codex login status >/dev/null 2>&1
           printf '%s\n' 'WRITE_STAGE=codex_runtime_ready'
           printf '%s\n' 'WRITE_STAGE=workspace_prepare_start'
+          result_code='SELF_HOSTED_PREFLIGHT_FAILED'
           "${automation_source}/scripts/self-hosted/run-workspace-lifecycle.sh" prepare --active-run --local-source "${caller_source}" --expected-repository "${GITHUB_REPOSITORY}" --base-sha "${base_sha}" --workspace-name "${workspace_name}" --execution-id "${execution_id}"
           prepared=1
           printf '%s\n' 'WRITE_STAGE=workspace_prepare_complete'
+          result_code='WORKSPACE_VALIDATION_FAILED'
           printf '%s\n' 'WRITE_STAGE=branch_setup_start'
           base_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')"
           remote_base_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/${base_branch}" --jq '.commit.sha')"
@@ -2045,11 +2082,21 @@ jobs:
           else
             [[ -s "${task_file}" ]] || exit 1
           fi
+          result_code='CODEX_EXECUTION_FAILED'
           printf '%s\n' 'WRITE_STAGE=codex_execution_start'
-          env -i PATH="${PATH}" CODEX_HOME="${codex_home}" HOME="${codex_home}" USERPROFILE="${codex_home}" \
-            codex --approve-for-me exec --sandbox workspace-write --ephemeral --cd "${workspace_path}" --json --output-last-message "$(cygpath -aw -- "${result_file}")" < "${task_file}" >/dev/null 2>"${stderr_file}"
+          if env -i PATH="${PATH}" CODEX_HOME="${codex_home}" HOME="${codex_home}" USERPROFILE="${codex_home}" \
+            codex --approve-for-me exec --sandbox workspace-write --ephemeral --cd "${workspace_path}" --json --output-last-message "$(cygpath -aw -- "${result_file}")" < "${task_file}" >/dev/null 2>"${stderr_file}"; then
+            :
+          else
+            codex_exit=$?
+            if grep -Eqi 'authentication|unauthorized|not authenticated|login required|token' "${stderr_file}"; then
+              result_code='CODEX_AUTH_FAILED'
+            fi
+            exit "${codex_exit}"
+          fi
           [[ -s "${result_file}" ]] || exit 1
           [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || exit 1
+          result_code='WORKSPACE_VALIDATION_FAILED'
           printf '%s\n' 'WRITE_STAGE=codex_execution_complete'
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_start'
           [[ "$(git -C "${workspace_path}" symbolic-ref --short HEAD)" == "${task_branch}" ]]
@@ -2108,6 +2155,7 @@ jobs:
           [[ "${remote_base_sha_now}" == "${base_sha}" ]]
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_remote_base_complete'
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_complete'
+          result_code='GITHUB_PUBLISH_FAILED'
           printf '%s\n' 'WRITE_STAGE=trusted_commit_start'
           git -C "${workspace_path}" add -- "${expected_path}"
           git -C "${workspace_path}" diff --cached --check
@@ -2143,6 +2191,7 @@ jobs:
           [[ "${pr_url}" =~ ^https://github\.com/${GITHUB_REPOSITORY}/pull/[1-9][0-9]*$ ]]
           printf '%s\n' 'WRITE_STAGE=draft_pr_complete'
           printf '%s\n' 'WRITE_STAGE=payload_complete'
+          result_code='SUCCESS'
           printf '%s\n' PASS > "${PAYLOAD_STATUS_FILE}"
           PAYLOAD
           chmod 700 -- "${CODEX_PAYLOAD_FILE}"
