@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('prepare', 'cleanup', 'preflight')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('prepare', 'cleanup', 'recover', 'preflight')][string]$Action,
     [Parameter(Mandatory = $true)][string]$Root,
     [string]$RepositoryUrl,
     [string]$LocalSourcePath,
@@ -44,6 +44,20 @@ function Assert-ManagedWorkspaceBoundary([string]$FullRoot) {
     }
     Assert-NoReparsePath (Join-Path $FullRoot 'workspaces')
 }
+function Assert-ManagedRootIdentity([string]$FullRoot) {
+    $markerPath = Join-Path $FullRoot '.codex-automation-managed'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { Fail 'managed root marker is missing' }
+    $markerItem = Get-Item -LiteralPath $markerPath -Force
+    if (($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Fail 'managed root marker is a reparse point' }
+    try { $marker = Get-Content -LiteralPath $markerPath -Raw -ErrorAction Stop | ConvertFrom-Json } catch { Fail 'managed root marker is malformed' }
+    $expected = @('created_at','execution_area_id','managed_by','schema')
+    $actual = @($marker.PSObject.Properties.Name | Sort-Object)
+    if ((@($expected | Sort-Object) -join '|') -ne ($actual -join '|')) { Fail 'managed root marker fields are not exact' }
+    if ([string]$marker.managed_by -cne 'codex-automation' -or (($marker.schema -isnot [int]) -and ($marker.schema -isnot [long])) -or [int64]$marker.schema -ne 1) { Fail 'managed root marker identity is unexpected' }
+    if ([string]$marker.execution_area_id -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$') { Fail 'managed root marker identity is invalid' }
+    $parsed = [DateTime]::MinValue
+    if (-not [DateTime]::TryParse([string]$marker.created_at, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { Fail 'managed root marker timestamp is invalid' }
+}
 function Assert-NoReparsePath([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
@@ -53,6 +67,27 @@ function Assert-NoReparsePath([string]$Path) {
         if ($null -eq $parentProperty) { break }
         $item = $parentProperty.Value
     }
+}
+function Assert-NoReparseDescendants([string]$Path) {
+    Assert-NoReparsePath $Path
+    foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop)) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Fail 'reparse point in workspace contents' }
+    }
+}
+function Assert-RecoveryManagedArea([string]$FullRoot, [string]$TargetWorkspacePath) {
+    Assert-ManagedWorkspaceBoundary $FullRoot
+    Assert-ManagedRootIdentity $FullRoot
+    Assert-InactiveRunState $FullRoot
+    foreach ($directoryName in @('state','codex-home','temp')) {
+        $directory = Join-Path $FullRoot $directoryName
+        Assert-NoReparseDescendants $directory
+        if (@(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop).Count -ne 0) { Fail "$directoryName contains recovery residue" }
+    }
+    Assert-NoReparseDescendants (Join-Path $FullRoot 'logs')
+    $workspaceRoot = Join-Path $FullRoot 'workspaces'
+    $entries = @(Get-ChildItem -LiteralPath $workspaceRoot -Force -ErrorAction Stop)
+    if ($entries.Count -ne 1 -or $entries[0].FullName -cne (FullPath $TargetWorkspacePath)) { Fail 'workspace area contains unexpected residue' }
+    Assert-NoReparseDescendants $TargetWorkspacePath
 }
 function Normalize-Repository([string]$Value) {
     $normalized = $Value.Trim() -replace '\.git$',''
@@ -73,7 +108,7 @@ function Read-OwnershipMarker([string]$WorkspacePath) {
     $expected = @('base_sha','execution_id','repository','schema','workspace_name')
     $actual = @($marker.PSObject.Properties.Name | Sort-Object)
     if ((@($expected | Sort-Object) -join '|') -ne ($actual -join '|')) { Fail 'workspace ownership marker fields are not exact' }
-    if ([int]$marker.schema -ne $WorkspaceSchema -or [string]$marker.execution_id -cne $ExecutionId -or [string]$marker.workspace_name -cne $WorkspaceName -or [string]$marker.repository -cne $ExpectedRepository -or [string]$marker.base_sha -cne $BaseSha) { Fail 'workspace ownership marker does not match requested execution' }
+    if ((($marker.schema -isnot [int]) -and ($marker.schema -isnot [long])) -or [int64]$marker.schema -ne $WorkspaceSchema -or [string]$marker.execution_id -cne $ExecutionId -or [string]$marker.workspace_name -cne $WorkspaceName -or [string]$marker.repository -cne $ExpectedRepository -or [string]$marker.base_sha -cne $BaseSha) { Fail 'workspace ownership marker does not match requested execution' }
     return $marker
 }
 function Invoke-Git([string[]]$Arguments) {
@@ -91,13 +126,15 @@ function Assert-CommitObject([string]$WorkspacePath, [string]$Sha) {
     $type = (& git -C $WorkspacePath cat-file -t "$Sha`^{commit}" 2>$null).Trim()
     if ($LASTEXITCODE -ne 0 -or $type -cne 'commit') { Fail 'expected final SHA is not an existing commit object' }
 }
-function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipMarker, [switch]$AllowSingleDirtyPayload) {
+function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipMarker, [switch]$AllowSingleDirtyPayload, [switch]$AllowRecoveryDirty) {
     $actualRemote = (& git -C $WorkspacePath remote get-url origin 2>$null).Trim()
     if ((Normalize-Repository $actualRemote) -cne $ExpectedRepository) { Fail 'cloned repository identity is unexpected' }
     $head = (& git -C $WorkspacePath rev-parse HEAD 2>$null).Trim()
     $expectedHead = $BaseSha.ToLowerInvariant()
     if (-not [string]::IsNullOrWhiteSpace($ExpectedFinalSha)) {
         Assert-CommitObject $WorkspacePath $ExpectedFinalSha.ToLowerInvariant()
+        $parents = @((& git -C $WorkspacePath show -s --format=%P $ExpectedFinalSha.ToLowerInvariant() 2>$null).Trim() -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($LASTEXITCODE -ne 0 -or $parents.Count -ne 1 -or $parents[0] -cne $BaseSha.ToLowerInvariant()) { Fail 'expected final SHA is not a direct child of expected base SHA' }
         $expectedHead = $ExpectedFinalSha.ToLowerInvariant()
     }
     if ($head -cne $expectedHead) { Fail 'workspace HEAD does not match expected immutable commit SHA' }
@@ -106,6 +143,16 @@ function Assert-RepositoryState([string]$WorkspacePath, [switch]$AllowOwnershipM
         $status = @($status | Where-Object { $_ -ne '?? .codex-workspace-owned.json' })
     }
     if ($status.Count -eq 0) { return }
+    if ($AllowRecoveryDirty) {
+        foreach ($entry in $status) {
+            if ($entry -match '^(?:\?\? |[ MADRCU?!]{2} )(.+)$') {
+                $relative = $Matches[1].Trim('"')
+                $candidate = Join-Path $WorkspacePath $relative
+                if (Test-Path -LiteralPath $candidate) { Assert-NoReparseDescendants $candidate }
+            } else { Fail 'workspace status entry is malformed' }
+        }
+        return
+    }
     if (-not $AllowSingleDirtyPayload -or $status.Count -ne 1 -or $status[0] -notmatch '^\?\? (ca-p10-032-validation/validation-[0-9]+\.txt|ca-p10-033-e2e/issue-[1-9][0-9]*\.txt)$') { Fail 'workspace base state is not clean' }
     $payloadPath = Join-Path $WorkspacePath ($status[0].Substring(3))
     if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) { Fail 'failed payload artifact is not a regular file' }
@@ -188,6 +235,22 @@ if ($Action -eq 'prepare') {
 }
 
 Assert-ManagedWorkspaceBoundary $fullRoot
+if ($Action -eq 'recover') {
+    if ($ActiveRun) { Fail 'recovery cannot run with active-run mode' }
+    Assert-ManagedRootIdentity $fullRoot
+    Assert-InactiveRunState $fullRoot
+    if (-not (Test-Path -LiteralPath $workspacePath -PathType Container)) { Fail 'failed workspace is missing' }
+    Assert-RecoveryManagedArea $fullRoot $workspacePath
+    Read-OwnershipMarker $workspacePath | Out-Null
+    Assert-RepositoryState $workspacePath -AllowOwnershipMarker -AllowRecoveryDirty
+    try {
+        Remove-Item -LiteralPath $workspacePath -Recurse -Force -ErrorAction Stop
+        if (Test-Path -LiteralPath $workspacePath) { Fail 'workspace recovery left residue' }
+        Invoke-ManagedPreflight $fullRoot
+        Write-Output 'WORKSPACE_RECOVERED'
+    } catch { Fail 'workspace recovery failed' }
+    exit 0
+}
 if ($ActiveRun) { Assert-ActiveRunState $fullRoot }
 if (Test-Path -LiteralPath $workspacePath) { Assert-NoReparsePath $workspacePath }
 Read-OwnershipMarker $workspacePath | Out-Null

@@ -54,6 +54,18 @@ try {
     $finalSha = Git-Value $sourceRepo @('rev-parse', 'HEAD')
     Invoke-Git $sourceRepo @('branch', 'final', $finalSha)
     Invoke-Git $sourceRepo @('checkout', '--quiet', $baseSha)
+    Set-Content -LiteralPath (Join-Path $sourceRepo 'unrelated.txt') -Value 'unrelated final' -NoNewline
+    Invoke-Git $sourceRepo @('add', 'unrelated.txt')
+    Invoke-Git $sourceRepo @('commit', '--quiet', '-m', 'unrelated final')
+    $unrelatedFinalSha = Git-Value $sourceRepo @('rev-parse', 'HEAD')
+    Invoke-Git $sourceRepo @('branch', 'unrelated-final', $unrelatedFinalSha)
+    Invoke-Git $sourceRepo @('checkout', '--quiet', $unrelatedFinalSha)
+    Set-Content -LiteralPath (Join-Path $sourceRepo 'unrelated-2.txt') -Value 'unrelated second parent' -NoNewline
+    Invoke-Git $sourceRepo @('add', 'unrelated-2.txt')
+    Invoke-Git $sourceRepo @('commit', '--quiet', '-m', 'unrelated second final')
+    $unrelatedFinalSha = Git-Value $sourceRepo @('rev-parse', 'HEAD')
+    Invoke-Git $sourceRepo @('branch', 'unrelated-final-2', $unrelatedFinalSha)
+    Invoke-Git $sourceRepo @('checkout', '--quiet', $baseSha)
 
     $legacy = New-Workspace 'legacy'
     Invoke-Lifecycle cleanup $legacy.Root
@@ -71,6 +83,11 @@ try {
     $mismatched = New-Workspace 'mismatched-final'
     Invoke-Git $mismatched.Path @('checkout', '--quiet', $finalSha)
     Assert-Fails 'mismatched final SHA' { Invoke-Lifecycle cleanup $mismatched.Root $baseSha }
+
+    $unrelated = New-Workspace 'unrelated-final'
+    Invoke-Git $unrelated.Path @('checkout', '--quiet', $unrelatedFinalSha)
+    Assert-Fails 'unrelated final SHA' { Invoke-Lifecycle cleanup $unrelated.Root $unrelatedFinalSha }
+    if (-not (Test-Path -LiteralPath $unrelated.Path)) { throw 'unrelated final cleanup removed workspace' }
 
     $nonHex = New-Workspace 'nonhex-final'
     Assert-Fails 'non-hex final SHA' { Invoke-Lifecycle cleanup $nonHex.Root 'not-a-sha' }
@@ -104,6 +121,83 @@ try {
     $marker = Get-Content -LiteralPath $markerPath -Raw
     Set-Content -LiteralPath $markerPath -Value ($marker.Replace($baseSha, ('0' * 40))) -NoNewline
     Assert-Fails 'ownership marker mismatch' { Invoke-Lifecycle cleanup $markerMismatch.Root }
+
+    $recover = New-Workspace 'recover-valid'
+    Set-Content -LiteralPath (Join-Path $recover.Path 'unrelated.txt') -Value 'failed run residue' -NoNewline
+    Set-Content -LiteralPath (Join-Path $recover.Root 'logs\recovery.log') -Value 'sanitized diagnostic' -NoNewline
+    Invoke-Lifecycle recover $recover.Root
+    if (Test-Path -LiteralPath $recover.Path) { throw 'valid recovery left workspace residue' }
+
+    $residue = New-Workspace 'recover-managed-residue'
+    Set-Content -LiteralPath (Join-Path $residue.Root 'temp\unexpected.txt') -Value 'ambiguous residue' -NoNewline
+    Assert-Fails 'managed-area residue recovery' { Invoke-Lifecycle recover $residue.Root }
+    if (-not (Test-Path -LiteralPath $residue.Path)) { throw 'managed-area residue recovery removed workspace' }
+
+    $active = New-Workspace 'recover-active'
+    $activeState = [ordered]@{ schema = 1; execution_id = 'recover-active'; github_run_attempt = '1'; github_run_id = '2'; repository_id = '3'; started_at_utc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+    Set-Content -LiteralPath (Join-Path $active.Root 'state\current-run.json') -Value $activeState -NoNewline
+    Assert-Fails 'active recovery' { Invoke-Lifecycle recover $active.Root }
+    if (-not (Test-Path -LiteralPath $active.Path)) { throw 'active recovery removed workspace' }
+
+    $repoMismatch = New-Workspace 'recover-repo-mismatch'
+    $repoMarkerPath = Join-Path $repoMismatch.Path '.codex-workspace-owned.json'
+    $repoMarker = Get-Content -LiteralPath $repoMarkerPath -Raw
+    Set-Content -LiteralPath $repoMarkerPath -Value ($repoMarker.Replace('example/repo', 'other/repo')) -NoNewline
+    Assert-Fails 'repository mismatch recovery' { Invoke-Lifecycle recover $repoMismatch.Root }
+    if (-not (Test-Path -LiteralPath $repoMismatch.Path)) { throw 'repository mismatch recovery removed workspace' }
+
+    $baseMismatch = New-Workspace 'recover-base-mismatch'
+    $baseMarkerPath = Join-Path $baseMismatch.Path '.codex-workspace-owned.json'
+    $baseMarker = Get-Content -LiteralPath $baseMarkerPath -Raw
+    Set-Content -LiteralPath $baseMarkerPath -Value ($baseMarker.Replace($baseSha, ('1' * 40))) -NoNewline
+    Assert-Fails 'base mismatch recovery' { Invoke-Lifecycle recover $baseMismatch.Root }
+
+    $rootMarkerMismatch = New-Workspace 'recover-root-marker-mismatch'
+    $rootMarkerPath = Join-Path $rootMarkerMismatch.Root '.codex-automation-managed'
+    Set-Content -LiteralPath $rootMarkerPath -Value '{}' -NoNewline
+    Assert-Fails 'managed root marker recovery' { Invoke-Lifecycle recover $rootMarkerMismatch.Root }
+
+    $rootSchemaString = New-Workspace 'recover-root-schema-string'
+    $rootSchemaPath = Join-Path $rootSchemaString.Root '.codex-automation-managed'
+    $rootSchema = Get-Content -LiteralPath $rootSchemaPath -Raw
+    Set-Content -LiteralPath $rootSchemaPath -Value ($rootSchema.Replace('"schema":1', '"schema":"1"')) -NoNewline
+    Assert-Fails 'managed root schema string recovery' { Invoke-Lifecycle recover $rootSchemaString.Root }
+
+    $ownershipSchemaString = New-Workspace 'recover-ownership-schema-string'
+    $ownershipSchemaPath = Join-Path $ownershipSchemaString.Path '.codex-workspace-owned.json'
+    $ownershipSchema = Get-Content -LiteralPath $ownershipSchemaPath -Raw
+    Set-Content -LiteralPath $ownershipSchemaPath -Value ($ownershipSchema.Replace('"schema":1', '"schema":"1"')) -NoNewline
+    Assert-Fails 'ownership schema string recovery' { Invoke-Lifecycle recover $ownershipSchemaString.Root }
+
+    $executionMismatch = New-Workspace 'recover-execution-mismatch'
+    $executionMarkerPath = Join-Path $executionMismatch.Path '.codex-workspace-owned.json'
+    $executionMarker = Get-Content -LiteralPath $executionMarkerPath -Raw
+    Set-Content -LiteralPath $executionMarkerPath -Value ($executionMarker.Replace('recover-execution-mismatch', 'different-execution')) -NoNewline
+    Assert-Fails 'execution mismatch recovery' { Invoke-Lifecycle recover $executionMismatch.Root }
+
+    $malformed = New-Workspace 'recover-malformed-marker'
+    Set-Content -LiteralPath (Join-Path $malformed.Path '.codex-workspace-owned.json') -Value '{' -NoNewline
+    Assert-Fails 'malformed marker recovery' { Invoke-Lifecycle recover $malformed.Root }
+
+    $reparse = New-Workspace 'recover-reparse'
+    $linkPath = Join-Path $reparse.Path 'link'
+    $linkKind = $null
+    try { New-Item -ItemType SymbolicLink -Path $linkPath -Target $sourceRepo -ErrorAction Stop | Out-Null; $linkKind = 'symbolic link' } catch { }
+    if ($null -eq $linkKind) {
+        try { New-Item -ItemType Junction -Path $linkPath -Target $sourceRepo -ErrorAction Stop | Out-Null; $linkKind = 'junction' } catch { }
+    }
+    if ($null -ne $linkKind) {
+        if (((Get-Item -LiteralPath $linkPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { throw 'reparse fixture did not create a reparse point' }
+        Assert-Fails 'reparse recovery' { Invoke-Lifecycle recover $reparse.Root }
+        if (-not (Test-Path -LiteralPath $reparse.Path)) { throw 'reparse recovery removed workspace' }
+    } else { Write-Output 'SKIP reparse fixture (symbolic links and junctions unavailable)' }
+
+    $escape = New-Workspace 'recover-escape'
+    $escapeMarkerPath = Join-Path $escape.Path '.codex-workspace-owned.json'
+    $escapeMarker = Get-Content -LiteralPath $escapeMarkerPath -Raw
+    Set-Content -LiteralPath $escapeMarkerPath -Value ($escapeMarker.Replace('workspace', '..\outside')) -NoNewline
+    Assert-Fails 'workspace identity escape recovery' { Invoke-Lifecycle recover $escape.Root }
+    if (-not (Test-Path -LiteralPath $escape.Path)) { throw 'workspace escape recovery removed workspace' }
 
     Write-Output 'PASS workspace lifecycle trusted-final and fail-closed cases'
 }

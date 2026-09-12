@@ -598,7 +598,50 @@ This result contract does not automate recovery, expose sensitive detail, or
 broaden any credential, runner, GitHub, WIF, or publication authority. An
 unsupported code is rejected rather than guessed.
 
-## 18. Phase 10 execution planning and grounding
+## 18. Practical Phase 11 recovery and resume
+
+The result action is an instruction for an operator or trusted automation; it
+is not permission for Local Codex to retry, recover, or publish anything.
+
+- `RETRY` applies to transient runner, model, network, or temporary OIDC and
+  Secret-read failures. It starts a new normal execution only; it does not
+  change retained work, Secret versions, or managed-area residue.
+- `RECOVER_THEN_RETRY` requires an explicit, targeted recovery procedure and
+  authoritative checks before a later normal execution. It is appropriate for
+  inactive managed workspace residue and for a verified pushed task branch
+  whose Draft Pull Request is absent.
+- `USER_DECISION` applies to authentication or Secret ambiguity, unsupported
+  classifications, and any state whose ownership cannot be proven. In
+  particular, multiple enabled Secret versions never mean that `latest` wins;
+  they remain a non-payload metadata review and recovery boundary.
+
+### Inactive failed workspace
+
+Normal cleanup remains deliberately narrow and never turns an ambiguous dirty
+workspace into a deletion target. The explicit trusted-operator command is
+`run-workspace-lifecycle.sh recover`, with the exact repository, workspace,
+execution ID, and base SHA retained from the failed execution. Before removing
+anything, it verifies the managed-area marker, an inactive/no-current-run
+state, the workspace ownership marker, repository and commit identity, the
+canonical managed-workspace boundary, and the absence of reparse points. A
+missing, malformed, mismatched, active, or unrelated workspace is rejected and
+left untouched. Recovery does not resume Local Codex work; a later run begins
+normally after preflight succeeds.
+
+### Pushed branch with missing Draft Pull Request
+
+`resume-trusted-publication.sh` is a trusted-automation-only command for the
+case where the exact task branch and implementation commit were already pushed
+but Draft Pull Request creation did not finish. It first reads and verifies the
+remote branch head, the exact one-parent relationship to the expected base,
+the Issue-derived deterministic branch identity, the current base head, and
+the complete existing-PR state. Only an absent PR permits creation of a new
+Draft PR. A matching existing Draft PR is reported without mutation; any other
+collision is rejected. The helper never invokes Codex, force-pushes, rewrites
+or deletes a branch, updates an existing PR, or merges. Its GitHub credential
+is available only in the trusted publication layer, never to Local Codex.
+
+## 19. Phase 10 execution planning and grounding
 
 The detailed Phase 10 implementation work units, read-only grounding gate, STOP conditions, task-result contract, and handoff rules are defined in `PHASE10_EXECUTION_PLAN.md`.
 

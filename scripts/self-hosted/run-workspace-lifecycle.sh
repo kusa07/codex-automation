@@ -34,7 +34,7 @@ while (($#)); do
     *) printf 'unknown option\n' >&2; exit 64 ;;
   esac
 done
-case "$action" in prepare|cleanup|preflight) ;; *) printf 'usage: %s {prepare|cleanup|preflight} [options]\n' "$0" >&2; exit 64 ;; esac
+case "$action" in prepare|cleanup|recover|preflight) ;; *) printf 'usage: %s {prepare|cleanup|recover|preflight} [options]\n' "$0" >&2; exit 64 ;; esac
 if [[ -n "$local_source_path" && "$local_source_path" =~ ^[A-Za-z]:[\\/] ]]; then
   [[ -n "$cygpath_bin" ]] || { printf 'cygpath is required for Windows local sources\n' >&2; exit 69; }
   local_source_path="$("$cygpath_bin" -aw -- "$local_source_path")"
