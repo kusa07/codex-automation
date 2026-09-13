@@ -57,11 +57,12 @@ Before beginning a new phase:
 | Phase 9 | Issue → `codex-ready` → validated Codex task input | Complete |
 | Phase 10 | Codex implementation → branch / commit / Pull Request | Complete |
 | Phase 11 | Failure handling, result reporting, and end-to-end validation | Complete |
-| Phase 12 | Multi-repository rollout and operational use | Next |
+| Phase 12A | ChatGPT return loop and operational feedback | Complete |
+| Phase 12B | Multi-repository rollout and operational use | Next |
 
 Current authoritative position:
 
-> Phase 11 is complete. Phase 12 is the next implementation phase.
+> Phase 12A is complete. Phase 12B is the next implementation phase.
 
 ## 4. Phase definitions
 
@@ -416,7 +417,38 @@ Complete.
 
 ---
 
-### Phase 12 — Multi-repository rollout and operational use
+### Phase 12A — ChatGPT return loop and operational feedback
+
+Purpose:
+
+Close the operational loop so that work started from ChatGPT can return automatically after Codex publication without polling, with authoritative GitHub verification and a user-visible notification.
+
+Planned outcomes:
+
+- one ChatGPT Work conversation acts as the operational return hub
+- GitHub Pull Request opened events trigger the return path without polling
+- the return path remains read-only against GitHub
+- triggering Pull Request state is independently read back from GitHub
+- repository, Pull Request, Draft state, head branch, source Issue, changed-file count, and safe next action are reported in a machine-readable envelope
+- the same return hub can distinguish caller repositories by repository identity
+- successful return processing produces a user notification
+
+Completion criteria:
+
+- a ChatGPT-started Issue can traverse Issue → `codex-ready` → GitHub Actions → Codex → branch / commit → Draft Pull Request
+- opening the resulting Draft Pull Request automatically triggers the ChatGPT Work return path without polling
+- the Work return path independently verifies the Draft Pull Request from GitHub before reporting success
+- the returned result identifies the repository and source Issue and reports `USER_REVIEW` as the safe next action for a valid Draft Pull Request
+- the user receives the return notification
+- one complete ChatGPT → Codex → Draft Pull Request → ChatGPT return-loop E2E succeeds
+
+Status:
+
+Complete.
+
+---
+
+### Phase 12B — Multi-repository rollout and operational use
 
 Purpose:
 
