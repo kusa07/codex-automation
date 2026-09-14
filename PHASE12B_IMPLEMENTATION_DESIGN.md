@@ -42,6 +42,12 @@ an approved full-template upgrade; divergent files are never overwritten.
 `ABSENT` remains an onboarding plan candidate in Batch A rather than an
 automatic workflow creation path.
 
+Re-onboarding is never selected by `latest`, a maximum version number, or a
+disabled-version guess. Its future restore candidate must prove the same
+repository ID and Secret ID, one explicit existing numeric version in
+`DISABLED` state, valid authentication, and zero enabled versions; every other
+state stops for operator review.
+
 ## Rollout order
 
 After Batch A is reviewed and merged, a later operation creates the immutable

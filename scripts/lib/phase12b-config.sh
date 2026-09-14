@@ -26,6 +26,12 @@ phase12b_classify_caller_lifecycle() {
   elif [[ -z "$active_id" && -z "$retired_id" ]]; then echo NEW
   else echo IDENTITY_CONFLICT; fi
 }
+phase12b_classify_reonboard() {
+  local expected_repository_id="${1:-}" actual_repository_id="${2:-}" expected_secret_id="${3:-}" actual_secret_id="${4:-}" version_id="${5:-}" version_exists="${6:-}" version_state="${7:-}" auth_valid="${8:-}" enabled_count="${9:-}"
+  [[ "$expected_repository_id" =~ ^[1-9][0-9]*$ && "$expected_repository_id" == "$actual_repository_id" ]] || { echo STOP; return; }
+  phase12b_require_secret_id "$expected_secret_id" >/dev/null || { echo STOP; return; }
+  [[ "$expected_secret_id" == "$actual_secret_id" && "$version_id" =~ ^[1-9][0-9]*$ && "$version_exists" == true && "$version_state" == DISABLED && "$auth_valid" == true && "$enabled_count" == 0 ]] && echo RESTORE_CANDIDATE || echo STOP
+}
 phase12b_validate_environment() {
   local file="$1" owner owner_id project project_number pool provider resource repository workflow sha
   owner="$(phase12b_yaml_value "$file" '.github.owner')"; owner_id="$(phase12b_yaml_value "$file" '.github.owner_id')"
