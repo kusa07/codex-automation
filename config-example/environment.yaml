@@ -1,0 +1,16 @@
+schema_version: 1
+github:
+  owner: kusa07
+  owner_id: 32902649
+google_cloud:
+  project_id: codex-automation-506111
+  project_number: '896979145485'
+  workload_identity_pool: github
+  workload_identity_provider: github-actions
+  workload_identity_provider_resource: projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions
+automation:
+  repository: kusa07/codex-automation
+  workflow_path: .github/workflows/codex-run.yml
+  active_workflow_sha: 352857a387b1f855920fb8d1587091b31e518c21
+host:
+  config: hosts/main-windows.yaml

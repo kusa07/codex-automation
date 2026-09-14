@@ -1010,3 +1010,16 @@ Execution backend
 各管理番号の具体的なscope、grounding checklist、STOP条件、result contractは `PHASE10_EXECUTION_PLAN.md` を正とする。
 
 各taskはwrite前にread-only groundingを行い、計画上の想定をactual repository / host / previous-task resultと照合する。重大な差異がある場合は、計画に合わせて現実を無理に変更せず `STOP_AND_REPORT` としてUser / ChatGPTへ戻す。
+
+## Phase 12B host policy
+
+Phase 12B の標準 service identity は `NT AUTHORITY\NETWORK SERVICE`
+(`S-1-5-20`) とする。runner 本体は caller ごとに repository-scoped
+directory / service として置くが、runner directory は引き続き Managed
+Execution Area の schema member ではない。`C:\ProgramData\CodexAutomation`
+の managed profile を使い、interactive user profile へ依存しない。
+
+通常実行は既存 host の identity、ACL、runner registration を変更しない。
+identity、runner root、execution root、ACL policy の変更は quiescence を
+確認する明示的な migration として扱い、partial または ambiguous state を
+自動修復しない。

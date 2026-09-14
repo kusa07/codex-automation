@@ -16,7 +16,10 @@ $ErrorActionPreference = 'Stop'
 $Schema = 1
 $StateName = 'current-run.json'
 $ManagedAreaHelper = Join-Path $PSScriptRoot 'managed-execution-area.ps1'
-$RunnerSidValue = 'S-1-5-21-1522072177-46615327-2561548676-1001'
+# The service identity is a stable Windows built-in principal, never a
+# machine- or person-specific SID. Host migration is intentionally separate
+# from normal execution and is handled only by the Phase 12B migration path.
+$RunnerSidValue = 'S-1-5-20'
 function Fail([string]$Message) { Write-Output 'FAIL_CLOSED'; throw "local execution failed closed: $Message" }
 function Get-FullDirectory([string]$Path) { try { return [System.IO.Path]::GetFullPath($Path) } catch { Fail 'invalid execution root' } }
 function Assert-Input([string]$Value, [string]$Name) { if ([string]::IsNullOrWhiteSpace($Value) -or $Value -notmatch '^[0-9]+$') { Fail "$Name is invalid" } }

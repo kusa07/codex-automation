@@ -652,3 +652,16 @@ Before a Phase 10 task performs writes, the Parent agent must ground the prompt 
 A planned implementation detail must not override actual safe state. If grounding reveals a material architecture, security, roadmap, caller-contract, or runtime-strategy mismatch, stop and report rather than broadening the investigation or silently redesigning the system.
 
 The next task must be prepared from the execution plan plus the actual result of the previous task. Do not advance merely because the previous task was expected to succeed.
+
+## Phase 12B operator plans
+
+Caller onboarding, offboarding, workflow synchronization, host bootstrap, and
+host migration first classify the current state and emit a consolidated plan.
+They require one explicit operator approval before any mutation. `NEW` and
+verified `EXISTING` may proceed only under their specific operation; malformed,
+partial, reparse, identity-conflicting, or ACL-divergent state is a safety STOP.
+
+Host migration and production caller workflow switches require quiescence: no
+active or queued workflow, active local execution, held Global Mutex, or
+residual execution state. Batch A supplies the plan contracts only; it does
+not perform those mutations.

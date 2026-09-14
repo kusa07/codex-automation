@@ -282,3 +282,15 @@ The following are outside the guarantee of `codex-automation` itself:
 Host hardening such as disk encryption may be recommended operationally, but Phase 10 does not claim to make an already-compromised host trustworthy.
 
 Credential handling therefore relies on restricting where sensitive files may be written, limiting their lifetime, deleting them after use, and verifying the known managed locations before and after execution. The design does not claim forensic secure erasure on SSD or other storage media.
+
+## Phase 12B host foundation
+
+The public Phase 12B policy uses the built-in Windows service principal
+`NT AUTHORITY\NETWORK SERVICE` (`S-1-5-20`), never a personal or
+machine-specific SID. Runtime and managed-profile paths must be automation
+owned. ACL policy permits only NETWORK SERVICE, Administrators, and SYSTEM to
+write these roots; broad `Everyone` or `Users` write fallback is forbidden.
+
+Each active caller has a repository-scoped runner registration, while the
+Windows host, service identity, managed execution area, and Global Mutex remain
+shared infrastructure rather than an OS-level caller-isolation boundary.

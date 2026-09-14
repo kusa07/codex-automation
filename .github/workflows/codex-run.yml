@@ -15,6 +15,10 @@ on:
         description: Full resource name of the trusted Workload Identity Provider
         required: true
         type: string
+      codex_auth_secret_id:
+        description: Exact caller-scoped Secret Manager ID holding the Codex authentication state
+        required: true
+        type: string
       validation_mode:
         description: Run the isolated self-hosted read-only validation path
         required: false
@@ -43,9 +47,9 @@ jobs:
     env:
       CALLER_REPOSITORY_NAME: ${{ github.event.repository.name }}
       GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
-      # This name selects a resource. Secret IAM based on repository_id is the
-      # authorization boundary; the derived name is not an authorization check.
-      CONNECTIVITY_SECRET_ID: codex-auth-${{ github.event.repository.name }}
+      # The caller renders this literal from its desired state. Secret IAM based
+      # on repository_id remains the authorization boundary.
+      CONNECTIVITY_SECRET_ID: ${{ inputs.codex_auth_secret_id }}
     steps:
       - name: Resolve trusted caller repository metadata
         id: repository_metadata
@@ -1473,7 +1477,7 @@ jobs:
       CALLER_REPOSITORY_NAME: ${{ github.event.repository.name }}
       GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
       WORKLOAD_IDENTITY_PROVIDER: ${{ inputs.workload_identity_provider }}
-      CONNECTIVITY_SECRET_ID: codex-auth-${{ github.event.repository.name }}
+      CONNECTIVITY_SECRET_ID: ${{ inputs.codex_auth_secret_id }}
       CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
       CODEX_HOME: C:/codex-self-hosted/codex-home
       CODEX_VERSION: 0.148.0
@@ -1775,7 +1779,7 @@ jobs:
       CALLER_REPOSITORY_NAME: ${{ github.event.repository.name }}
       GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
       WORKLOAD_IDENTITY_PROVIDER: ${{ inputs.workload_identity_provider }}
-      CONNECTIVITY_SECRET_ID: codex-auth-${{ github.event.repository.name }}
+      CONNECTIVITY_SECRET_ID: ${{ inputs.codex_auth_secret_id }}
       CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
       CODEX_HOME: C:/codex-self-hosted/codex-home
       CODEX_VERSION: 0.148.0
