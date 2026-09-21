@@ -1,0 +1,12 @@
+schema_version: 1
+repository:
+  full_name: kusa07/example-project
+  id: 123456789
+secret:
+  id: codex-auth-example-project
+workflow:
+  path: .github/workflows/codex-connectivity-test.yml
+  branch: main
+runner:
+  enabled: true
+  scope: repository

@@ -9,7 +9,7 @@ trap cleanup EXIT
 export CODEX_AUTOMATION_ROOT="$test_root"
 "${script_dir}/manage-execution-area.sh" ensure >/dev/null
 actual_sid="$(pwsh -NoLogo -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value')"
-if [[ "$actual_sid" != 'S-1-5-21-1522072177-46615327-2561548676-1001' ]]; then
+if [[ "$actual_sid" != 'S-1-5-20' ]]; then
   printf 'mutex lifecycle tests skipped: current identity SID is not the approved runner SID\n'
   exit 0
 fi

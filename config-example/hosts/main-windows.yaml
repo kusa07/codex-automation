@@ -1,0 +1,16 @@
+schema_version: 1
+host_id: main-windows-runner
+platform: windows
+paths:
+  execution_root: 'C:\codex-self-hosted'
+  runner_root: 'C:\codex-runners'
+  runtime_root: 'C:\ProgramData\CodexAutomation'
+  profile_root: 'C:\ProgramData\CodexAutomation\profile'
+runner:
+  mode: windows-service
+  service_identity: network-service
+  service_sid: S-1-5-20
+  labels: [self-hosted, Windows, X64, codex-automation]
+execution:
+  serialization: global-mutex
+  quiescence_timeout_seconds: 600

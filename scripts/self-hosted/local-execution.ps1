@@ -16,7 +16,10 @@ $ErrorActionPreference = 'Stop'
 $Schema = 1
 $StateName = 'current-run.json'
 $ManagedAreaHelper = Join-Path $PSScriptRoot 'managed-execution-area.ps1'
-$RunnerSidValue = 'S-1-5-21-1522072177-46615327-2561548676-1001'
+# The service identity is a stable Windows built-in principal, never a
+# machine- or person-specific SID. Host migration is intentionally separate
+# from normal execution and is handled only by the Phase 12B migration path.
+$RunnerSidValue = 'S-1-5-20'
 function Fail([string]$Message) { Write-Output 'FAIL_CLOSED'; throw "local execution failed closed: $Message" }
 function Get-FullDirectory([string]$Path) { try { return [System.IO.Path]::GetFullPath($Path) } catch { Fail 'invalid execution root' } }
 function Assert-Input([string]$Value, [string]$Name) { if ([string]::IsNullOrWhiteSpace($Value) -or $Value -notmatch '^[0-9]+$') { Fail "$Name is invalid" } }
@@ -25,7 +28,7 @@ function Invoke-AreaPreflight([string]$FullRoot) { & $ManagedAreaHelper -Action 
 function Read-Marker([string]$FullRoot) { $path = Join-Path $FullRoot '.codex-automation-managed'; if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Fail 'managed marker is missing' }; try { return (Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { Fail 'managed marker is malformed' } }
 function Get-LockName([object]$Marker) { $id = [string]$Marker.execution_area_id; if ($id -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$') { Fail 'execution area identity is invalid' }; return "Global\CodexAutomation-ExecutionArea-$($id -replace '-', '')" }
 function Get-RunnerSid { try { $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { Fail 'current Windows identity is unavailable' }; if ($current -cne $RunnerSidValue) { Fail 'current Windows identity is not the approved runner identity' }; return [System.Security.Principal.SecurityIdentifier]::new($RunnerSidValue) }
-function New-MutexSecurity { $sid = Get-RunnerSid; $security = [System.Security.AccessControl.MutexSecurity]::new(); $security.SetAccessRuleProtection($true, $false); $rule = [System.Security.AccessControl.MutexAccessRule]::new($sid, [System.Security.AccessControl.MutexRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow); $security.AddAccessRule($rule); return $security }
+function New-MutexSecurity([System.Security.Principal.SecurityIdentifier]$Sid) { if($null -eq $Sid){$Sid=Get-RunnerSid}; $security = [System.Security.AccessControl.MutexSecurity]::new(); $security.SetAccessRuleProtection($true, $false); $rule = [System.Security.AccessControl.MutexAccessRule]::new($Sid, [System.Security.AccessControl.MutexRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow); $security.AddAccessRule($rule); return $security }
 function Assert-MutexAcl([System.Threading.Mutex]$Mutex) {
     $target = Get-RunnerSid
     $rules = @($Mutex.GetAccessControl().GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
@@ -33,7 +36,7 @@ function Assert-MutexAcl([System.Threading.Mutex]$Mutex) {
     $rule = $rules[0]
     if ($rule.IdentityReference.Value -cne $RunnerSidValue -or $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or $rule.MutexRights -ne [System.Security.AccessControl.MutexRights]::FullControl) { Fail 'named mutex DACL is broader than the approved runner identity' }
 }
-function Open-OrCreateMutex([string]$Name, [ref]$Created) { $mutex = $null; try { $security = New-MutexSecurity; $Created.Value = $false; $mutex = [System.Threading.Mutex]::new($false, $Name, [ref]$Created.Value, $security); Assert-MutexAcl $mutex; return $mutex } catch [System.Management.Automation.MethodException] { if ($null -ne $mutex) { $mutex.Dispose() }; Fail 'explicit MutexSecurity constructor is unavailable; refusing weaker ACL fallback' } catch { if ($null -ne $mutex) { $mutex.Dispose() }; Fail 'explicit Mutex ACL setup failed' } }
+function Open-OrCreateMutex([string]$Name, [ref]$Created) { $mutex = $null; try { $security = New-MutexSecurity (Get-RunnerSid); $Created.Value = $false; $mutex = [System.Threading.Mutex]::new($false, $Name, [ref]$Created.Value, $security); Assert-MutexAcl $mutex; return $mutex } catch [System.Management.Automation.MethodException] { if ($null -ne $mutex) { $mutex.Dispose() }; Fail 'explicit MutexSecurity constructor is unavailable; refusing weaker ACL fallback' } catch { if ($null -ne $mutex) { $mutex.Dispose() }; Fail 'explicit Mutex ACL setup failed' } }
 function Write-AtomicJson([string]$Path, [object]$Object) { $directory = Split-Path -Parent $Path; $leaf = Split-Path -Leaf $Path; $temp = Join-Path $directory (".{0}.{1}.tmp" -f $leaf, ([guid]::NewGuid().ToString('N'))); try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes((($Object | ConvertTo-Json -Compress -Depth 5) + "`n")); $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough); try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }; if (Test-Path -LiteralPath $Path) { Fail 'current-run state appeared during atomic create' }; [IO.File]::Move($temp, $Path) } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue } } }
 function Resolve-PayloadArguments {
     if ($PayloadArgumentCount -lt 0) { Fail 'payload argument count is invalid' }

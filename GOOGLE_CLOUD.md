@@ -362,4 +362,14 @@ Intended later sequence:
 7. Implement the caller Workflow in the next phase.
 8. Test OIDC and Secret access before implementing Codex execution.
 
+## Phase 12B caller desired state and rollout
+
+Phase 12B caller configuration records the stable Secret resource ID as an
+explicit value. A repository rename does not rename that Secret automatically.
+Future caller workflow rollout is ordered: merge an immutable source SHA,
+stage it with `rotate-workflow-sha.sh`, synchronize a verified canonical caller
+workflow, validate, then explicitly finalize an obsolete SHA. The workflow
+must not treat `latest`, a highest version, or a derived repository name as an
+authority decision.
+
 

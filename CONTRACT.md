@@ -188,3 +188,12 @@ Request titles. Existing task branches or Pull Requests cause fail-closed
 behavior rather than update or overwrite.
 
 GitHub runner resource binding, when required in caller context, is a platform eligibility detail. It does not make the caller responsible for Self-hosted Execution security, lifecycle, or publication policy.
+
+## Phase 12B canonical workflow inputs
+
+A caller workflow renders its immutable automation SHA, Google Cloud project,
+WIF Provider, Issue trigger, and its configured `codex_auth_secret_id`. The
+Secret ID is literal caller desired-state data; it is not derived from the
+repository name. Caller workflow divergence is fail-closed: only an exact
+known canonical template may be upgraded through an explicit synchronization
+plan.

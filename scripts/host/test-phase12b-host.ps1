@@ -1,0 +1,120 @@
+$ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'phase12b-host.psm1') -Force
+$root=Join-Path ([IO.Path]::GetTempPath()) ('phase12b-host-test-'+[guid]::NewGuid().ToString('N'))
+$oldPath=$null
+function Assert-Throws([scriptblock]$Block,[string]$Message){try{& $Block}catch{return};throw $Message}
+try {
+  $runtime=Join-Path $root 'runtime';$execution=Join-Path $root 'execution';$profile=Join-Path $root 'profile';$runnerRoot=Join-Path $root 'runners';$area=Join-Path $PSScriptRoot '..\self-hosted\managed-execution-area.ps1'
+  if((Get-Phase12BHostState -RuntimeRoot $runtime -ExecutionRoot $execution -HostId host -ProfileRoot $profile -RunnerRoot $runnerRoot) -ne 'NEW'){throw 'NEW host classification failed'}
+  New-Item -ItemType Directory -Path $runtime|Out-Null;if((Get-Phase12BHostState -RuntimeRoot $runtime -ExecutionRoot $execution -HostId host -ProfileRoot $profile -RunnerRoot $runnerRoot) -ne 'INCONSISTENT'){throw 'partial host was accepted'};Remove-Item -LiteralPath $runtime -Recurse -Force
+  & $area -Action ensure -Root $execution|Out-Null;New-Item -ItemType Directory -Path $runtime,$profile,$runnerRoot -Force|Out-Null;@{schema=1;host_id='host';service_identity='NT AUTHORITY\NETWORK SERVICE';service_sid='S-1-5-20';execution_root=$execution;runtime_root=$runtime}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $runtime 'runtime.json') -NoNewline
+  if((Get-Phase12BHostState -RuntimeRoot $runtime -ExecutionRoot $execution -HostId host -ProfileRoot $profile -RunnerRoot $runnerRoot) -ne 'EXISTING'){throw 'EXISTING host classification failed'}
+  if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 2 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('X64')) -ne 'INCONSISTENT'){throw 'wrong repository ID was accepted'}
+  if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 1 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('Windows')) -ne 'INCONSISTENT'){throw 'wrong labels were accepted'}
+  if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 1 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('X64') -ExpectedPathName 'a\run.cmd' -ActualPathName 'b\run.cmd') -ne 'INCONSISTENT'){throw 'wrong PathName was accepted'}
+  if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 1 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('X64') -GitHubCount 2) -ne 'INCONSISTENT'){throw 'duplicate runner was accepted'}
+  $serviceRoot=Join-Path $root 'service-runner';New-Item -ItemType Directory -Path (Join-Path $serviceRoot 'bin') -Force|Out-Null
+  Set-Content -LiteralPath (Join-Path $serviceRoot '.service') -Value 'actions.runner.owner-repo.codex-repo-12345' -NoNewline;Set-Content -LiteralPath (Join-Path $serviceRoot 'bin\RunnerService.exe') -Value fixture -NoNewline
+  $expectedService=Get-Phase12BExpectedServiceName $serviceRoot
+  $serviceRecord=[pscustomobject]@{Name=$expectedService;PathName=('"{0}"' -f (Join-Path $serviceRoot 'bin\RunnerService.exe'));StartName='NT AUTHORITY\NETWORK SERVICE';State='Running'}
+  if((Get-Phase12BServiceForRunner -RunnerRoot $serviceRoot -ServiceRecords @($serviceRecord)).Classification -ne 'EXISTING'){throw 'exact service grounding failed'}
+  $wrongName=[pscustomobject]@{Name='actions.runner.someone-else';PathName=$serviceRecord.PathName;StartName=$serviceRecord.StartName;State=$serviceRecord.State}
+  if((Get-Phase12BServiceForRunner -RunnerRoot $serviceRoot -ServiceRecords @($wrongName)).Classification -ne 'INCONSISTENT'){throw 'wrong Windows service name was accepted'}
+  $wrongPath=[pscustomobject]@{Name=$expectedService;PathName='"C:\\other\\RunnerService.exe"';StartName=$serviceRecord.StartName;State=$serviceRecord.State}
+  if((Get-Phase12BServiceForRunner -RunnerRoot $serviceRoot -ServiceRecords @($wrongPath)).Classification -ne 'INCONSISTENT'){throw 'wrong Windows service path was accepted'}
+  $wrongIdentity=[pscustomobject]@{Name=$expectedService;PathName=$serviceRecord.PathName;StartName='LocalSystem';State='Running'}
+  if((Get-Phase12BServiceForRunner -RunnerRoot $serviceRoot -ServiceRecords @($wrongIdentity)).Classification -ne 'INCONSISTENT'){throw 'wrong Windows service identity was accepted'}
+  $duplicate=[pscustomobject]@{Name='actions.runner.duplicate';PathName=$serviceRecord.PathName;StartName=$serviceRecord.StartName;State='Running'}
+  if((Get-Phase12BServiceForRunner -RunnerRoot $serviceRoot -ServiceRecords @($serviceRecord,$duplicate)).Classification -ne 'INCONSISTENT'){throw 'duplicate Windows service mapping was accepted'}
+  if(-not(Test-Phase12BAclPolicy -Principals @('NT AUTHORITY\NETWORK SERVICE','BUILTIN\Administrators','NT AUTHORITY\SYSTEM'))){throw 'ACL positive failed'};if(Test-Phase12BAclPolicy -Principals @('NT AUTHORITY\NETWORK SERVICE','BUILTIN\Administrators','NT AUTHORITY\SYSTEM','Everyone')){throw 'broad ACL accepted'}
+  $aclRules=@('NT AUTHORITY\NETWORK SERVICE','BUILTIN\Administrators','NT AUTHORITY\SYSTEM'|ForEach-Object{[pscustomobject]@{IdentityReference=[pscustomobject]@{Value=$_};IsInherited=$false;AccessControlType='Allow';FileSystemRights=[Security.AccessControl.FileSystemRights]::FullControl;InheritanceFlags=([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit);PropagationFlags='None'}})
+  $acl=[pscustomobject]@{AreAccessRulesProtected=$true;Access=$aclRules}
+  if(-not(Test-Phase12BAclPolicy -Acl $acl)){throw 'exact per-root ACL rules were rejected'}
+  $badAcl=[pscustomobject]@{AreAccessRulesProtected=$true;Access=@($aclRules|ForEach-Object{$_.PSObject.Copy()})};$badAcl.Access[0].InheritanceFlags=[Security.AccessControl.InheritanceFlags]::None;if(Test-Phase12BAclPolicy -Acl $badAcl){throw 'ACL inheritance mismatch was accepted'}
+  $inheritanceEnabled=[pscustomobject]@{AreAccessRulesProtected=$false;Access=$aclRules};if(Test-Phase12BAclPolicy -Acl $inheritanceEnabled){throw 'ACL inheritance enabled state was accepted'}
+  $inheritedEveryone=[pscustomobject]@{AreAccessRulesProtected=$true;Access=@($aclRules)+@([pscustomobject]@{IdentityReference=[pscustomobject]@{Value='Everyone'};IsInherited=$true;AccessControlType='Allow';FileSystemRights=[Security.AccessControl.FileSystemRights]::FullControl;InheritanceFlags=([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit);PropagationFlags='None'})};if(Test-Phase12BAclPolicy -Acl $inheritedEveryone){throw 'unexpected inherited Everyone ACE was accepted'}
+  foreach($mutation in @('extra','missing','duplicate','rights','propagation','deny')){
+    $rules=@($aclRules|ForEach-Object{$_.PSObject.Copy()})
+    switch($mutation){'extra'{$rules+=([pscustomobject]@{IdentityReference=[pscustomobject]@{Value='Everyone'};IsInherited=$false;AccessControlType='Allow';FileSystemRights=[Security.AccessControl.FileSystemRights]::FullControl;InheritanceFlags=([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit);PropagationFlags='None'})}'missing'{$rules=@($rules|Select-Object -Skip 1)}'duplicate'{$rules+=($rules[0].PSObject.Copy())}'rights'{$rules[0].FileSystemRights=[Security.AccessControl.FileSystemRights]::Read}'propagation'{$rules[0].PropagationFlags='InheritOnly'}'deny'{$rules[0].AccessControlType='Deny'}}
+    if(Test-Phase12BAclPolicy -Acl ([pscustomobject]@{AreAccessRulesProtected=$true;Access=$rules})){throw "ACL $mutation mismatch was accepted"}
+  }
+  if(-not(Test-Phase12BFileAttributesSafe ([IO.FileAttributes]::Directory))){throw 'normal filesystem attributes were rejected'}
+  if(Test-Phase12BFileAttributesSafe ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)){throw 'reparse-point attributes were accepted'}
+  $localExecutionPath=Join-Path $PSScriptRoot '..\self-hosted\local-execution.ps1';$parseErrors=$null;$parseTokens=$null;$localAst=[Management.Automation.Language.Parser]::ParseFile($localExecutionPath,[ref]$parseTokens,[ref]$parseErrors)
+  $mutexFunction=@($localAst.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'New-MutexSecurity'},$true));if($mutexFunction.Count -ne 1){throw 'production MutexSecurity constructor was not uniquely found'}
+  Invoke-Expression $mutexFunction[0].Extent.Text;$networkServiceSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-20');$mutexSecurity=New-MutexSecurity $networkServiceSid
+  $mutexRules=@($mutexSecurity.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));if($mutexRules.Count -ne 1 -or $mutexRules[0].IdentityReference.Value -cne 'S-1-5-20' -or $mutexRules[0].MutexRights -ne [Security.AccessControl.MutexRights]::FullControl -or $mutexRules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow){throw 'production mutex ACL construction is not exact NETWORK SERVICE full control'}
+  $adapter=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Raw
+  foreach($text in 'InstallPackage','StartService','StopService','Unregister','RemoveService','Assert-ServicePath','RunnerPackagePath','registration-token','remove-token','Runner package target must be an empty','--runasservice','--windowslogonaccount','RunnerService.exe','.service'){if($adapter -notmatch [regex]::Escape($text)){throw "runner lifecycle stage missing: $text"}}
+  foreach($forbidden in 'sc.exe create','cmd.exe /c'){if($adapter -match [regex]::Escape($forbidden)){throw "non-official service host remains: $forbidden"}}
+  foreach($text in 'CODEX_RUNNER_PACKAGE_PATH','CODEX_RUNNER_TOKEN_COMMAND'){if($adapter -match [regex]::Escape($text)){throw "operator environment remained runner authority: $text"}}
+  foreach($file in 'bootstrap-host.ps1','migrate-host.ps1','verify-host.ps1'){ $text=Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw;if($text -match 'NOT_IMPLEMENTED_BATCH_A|CREATE_RUNNERS=false|INSTALL_WINDOWS_SERVICES=false|\[string\]\$RunnerAdapter' -or ($file -eq 'bootstrap-host.ps1' -and $text -match '\[string\]\$RunnerPackagePath')){throw "unsafe or empty apply path remains: $file"} }
+  # A constrained yq v4 double provides a complete desired-state fixture. No real tool or host is used.
+  $bin=Join-Path $root 'bin';New-Item -ItemType Directory -Path $bin|Out-Null
+  @'
+@echo off
+if "%1"=="--version" (echo yq version 4.44.1&exit /b 0)
+set q=%2
+if "%q%"==".schema_version" echo 1
+if "%q%"==".host.config" echo host.yaml
+if "%q%"==".host_id" echo host
+if "%q%"==".platform" echo windows
+if "%q%"==".paths.execution_root" echo __EXEC__
+if "%q%"==".paths.runner_root" echo __RUNNERS__
+if "%q%"==".paths.runtime_root" echo __RUNTIME__
+if "%q%"==".paths.profile_root" echo __PROFILE__
+if "%q%"==".runner.mode" echo windows-service
+if "%q%"==".runner.service_identity" echo network-service
+if "%q%"==".runner.service_sid" echo S-1-5-20
+if "%q%"==".execution.serialization" echo global-mutex
+if "%q%"==".runner.labels[]" (echo self-hosted&echo Windows&echo X64&echo codex-automation)
+if "%q%"==".github.owner_id" echo 32902649
+if "%q%"==".google_cloud.project_id" echo codex-automation-506111
+if "%q%"==".google_cloud.workload_identity_provider_resource" echo projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions
+if "%q%"==".automation.repository" echo kusa07/codex-automation
+if "%q%"==".automation.workflow_path" echo .github/workflows/codex-run.yml
+if "%q%"==".automation.active_workflow_sha" echo 352857a387b1f855920fb8d1587091b31e518c21
+if "%q%"==".repository.full_name" echo kusa07/example
+if "%q%"==".repository.id" echo 12345
+if "%q%"==".secret.id" echo codex-auth-example
+if "%q%"==".workflow.path" echo .github/workflows/codex-connectivity-test.yml
+if "%q%"==".runner.enabled" echo true
+if "%q%"==".runner.scope" echo repository
+'@.Replace('__EXEC__',$execution).Replace('__RUNNERS__',$runnerRoot).Replace('__RUNTIME__',$runtime).Replace('__PROFILE__',$profile)|Set-Content -LiteralPath (Join-Path $bin 'yq.cmd') -NoNewline
+  New-Item -ItemType Directory -Path (Join-Path $root 'callers')|Out-Null;New-Item -ItemType File -Path (Join-Path $root 'environment.yaml'),(Join-Path $root 'host.yaml'),(Join-Path $root 'callers/example.yaml')|Out-Null
+  $rendered=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\templates\caller\codex-connectivity-test.yml.tpl')).Replace('__AUTOMATION_REPOSITORY__','kusa07/codex-automation').Replace('__AUTOMATION_WORKFLOW_PATH__','.github/workflows/codex-run.yml').Replace('__AUTOMATION_WORKFLOW_SHA__','352857a387b1f855920fb8d1587091b31e518c21').Replace('__GOOGLE_CLOUD_PROJECT_ID__','codex-automation-506111').Replace('__WORKLOAD_IDENTITY_PROVIDER__','projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions').Replace('__CODEX_AUTH_SECRET_ID__','codex-auth-example');$content=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($rendered))
+  $member='principalSet://iam.googleapis.com/projects/896979145485/locations/global/workloadIdentityPools/github/attribute.repository_id/12345'
+  @{RepositoryId='12345';DefaultBranch='main';WorkflowBranch='main';Runners=@(@{name='codex-repo-12345';labels=@(@{name='self-hosted'},@{name='Windows'},@{name='X64'},@{name='codex-automation'})});WorkflowContent=$content;SecretVersions=@(@{name='projects/x/secrets/codex-auth-example/versions/1';state='ENABLED'});Iam=@{bindings=@(@{role='roles/secretmanager.secretAccessor';members=@($member)},@{role='roles/secretmanager.secretVersionManager';members=@($member)})};Provider=@{attributeCondition='assertion.repository_owner_id == "32902649" && assertion.job_workflow_ref == "kusa07/codex-automation/.github/workflows/codex-run.yml@352857a387b1f855920fb8d1587091b31e518c21"'}}|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $root 'external.json') -NoNewline
+  $callerRunnerRoot=Join-Path $runnerRoot 'repo-12345';$serviceFixture=@(@{Name='actions.runner.kusa07-example.codex-repo-12345';PathName=('"{0}"' -f (Join-Path $callerRunnerRoot 'bin\RunnerService.exe'));StartName='NT AUTHORITY\NETWORK SERVICE';State='Running'})
+  $serviceFixture|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $root 'services.json') -NoNewline
+  # Bootstrap must see a wholly NEW host; prior classification fixtures are removed.
+  Remove-Item -LiteralPath $runtime,$execution,$profile,$runnerRoot -Recurse -Force
+  $oldPath=$env:PATH;$env:PATH="$bin;$oldPath";$log=Join-Path $root 'adapter.log'
+  & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -AdapterLog $log -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null
+  $ordered=(Get-Content -LiteralPath $log -Raw);foreach($stage in 'EnsureDirectory','WriteRuntime','EnsureExecutionArea','ApplyAcl'){if($ordered -notmatch "ACTION=$stage"){throw "NEW bootstrap host stage missing: $stage"}}
+  $bootstrapMetadata=Read-Phase12BRunnerMetadata -RuntimeRoot $runtime -RepositoryId 12345 -RepositoryFullName kusa07/example -RunnerRoot $runnerRoot;if($bootstrapMetadata.lifecycle_state -ne 'ACTIVE'){throw 'bootstrap did not create canonical ACTIVE metadata'}
+  Assert-Throws { & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -AdapterLog $log -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null } 'production path accepted AdapterLog'
+  $env:PHASE12B_TEST_ADAPTER='1';Assert-Throws { & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') } 'environment-only test adapter activation accepted';Remove-Item Env:PHASE12B_TEST_ADAPTER
+  # Synthetic existing host makes migration prove it grounds and passes its actual service name to the adapter.
+  & $area -Action ensure -Root $execution|Out-Null;New-Item -ItemType Directory -Path $runtime,$profile,$runnerRoot -Force|Out-Null;@{schema=1;host_id='host';service_identity='NT AUTHORITY\NETWORK SERVICE';service_sid='S-1-5-20';execution_root=$execution;runtime_root=$runtime}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $runtime 'runtime.json') -NoNewline
+  $migratedRoot=Join-Path $runnerRoot 'repo-12345';New-Item -ItemType Directory -Path (Join-Path $migratedRoot 'bin') -Force|Out-Null;New-Item -ItemType File -Path (Join-Path $migratedRoot '.runner') -Force|Out-Null;Set-Content -LiteralPath (Join-Path $migratedRoot '.service') -Value 'actions.runner.kusa07-example.codex-repo-12345' -NoNewline;Set-Content -LiteralPath (Join-Path $migratedRoot 'bin\RunnerService.exe') -Value fixture -NoNewline
+  $activeMetadata=Get-Phase12BRunnerMetadataPath -RuntimeRoot $runtime -RepositoryId 12345;if(Test-Path -LiteralPath $activeMetadata){Remove-Item -LiteralPath $activeMetadata -Force}
+  $migrateLog=Join-Path $root 'migrate.log';& (Join-Path $PSScriptRoot 'migrate-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -AdapterLog $migrateLog -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null;$migratedMetadata=Read-Phase12BRunnerMetadata -RuntimeRoot $runtime -RepositoryId 12345 -RepositoryFullName kusa07/example -RunnerRoot $runnerRoot;if($migratedMetadata.lifecycle_state -ne 'ACTIVE'){throw 'migration did not route through canonical ACTIVE lifecycle'}
+  $cfg=Read-Phase12BConfig (Join-Path $root 'environment.yaml')
+  foreach($field in 'Provider','SecretVersions','Iam','WorkflowContent'){
+    $broken=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json
+    switch($field){'Provider'{$broken.Provider.attributeCondition='wrong'}'SecretVersions'{$broken.SecretVersions=$null}'Iam'{$broken.Iam=@{bindings=@()}}'WorkflowContent'{$broken.WorkflowContent=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('wrong'))}}
+    $badFile=Join-Path $root ("broken-$field.json");$broken|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $badFile -NoNewline;$ext=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $badFile
+    if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $ext -RunnerName 'codex-repo-12345').All){throw "$field read-back failure was accepted"}
+  }
+  $branchBroken=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json;$branchBroken.WorkflowBranch='release';$branchFile=Join-Path $root 'broken-branch.json';$branchBroken|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $branchFile -NoNewline
+  $branchExternal=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $branchFile
+  if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $branchExternal -RunnerName 'codex-repo-12345').All){throw 'caller workflow branch mismatch was accepted'}
+  $multiSecret=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json;$multiSecret.SecretVersions=@(@{name='projects/x/secrets/codex-auth-example/versions/1';state='ENABLED'},@{name='projects/x/secrets/codex-auth-example/versions/2';state='ENABLED'});$multiFile=Join-Path $root 'broken-multiple-secret.json';$multiSecret|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $multiFile -NoNewline
+  $multiExternal=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $multiFile
+  if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $multiExternal -RunnerName 'codex-repo-12345').All){throw 'multiple enabled Secret versions were accepted'}
+  $deceptiveIam=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json;$deceptiveIam.Iam=@{bindings=@(@{role='roles/viewer';members=@("prefix-$member-suffix")})};$deceptiveIamFile=Join-Path $root 'broken-iam-substring.json';$deceptiveIam|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $deceptiveIamFile -NoNewline;$deceptiveExternal=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $deceptiveIamFile;if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $deceptiveExternal -RunnerName 'codex-repo-12345').Iam -ne 'FAIL'){throw 'IAM substring deception was accepted'}
+  $malformed=Join-Path $root 'malformed-external.json';Set-Content -LiteralPath $malformed -Value '{' -NoNewline
+  Assert-Throws { Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $malformed|Out-Null } 'malformed external read-back was accepted'
+  'phase12b host state tests passed'
+} finally { if($oldPath){$env:PATH=$oldPath};if(Test-Path Env:PHASE12B_TEST_ADAPTER){Remove-Item Env:PHASE12B_TEST_ADAPTER};if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force} }

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('ensure', 'preflight')]
+    [ValidateSet('ensure', 'preflight', 'inspect')]
     [string]$Action,
 
     [Parameter(Mandatory = $true)]
@@ -208,4 +208,20 @@ function Preflight-Area {
     Write-Output 'managed execution area preflight passed'
 }
 
-if ($Action -eq 'ensure') { Ensure-Area } else { Preflight-Area }
+function Inspect-Area {
+    $fullRoot = Get-FullDirectory $Root
+    Assert-Directory $fullRoot 'execution root'
+    Read-Marker $fullRoot | Out-Null
+    Assert-ExpectedRootEntries $fullRoot
+    foreach ($directoryName in $KnownDirectories) {
+        Assert-Directory (Join-Path $fullRoot $directoryName) $directoryName
+    }
+    Assert-NoAtomicResidue $fullRoot
+    Write-Output 'managed execution area structure passed'
+}
+
+switch ($Action) {
+    'ensure' { Ensure-Area }
+    'preflight' { Preflight-Area }
+    'inspect' { Inspect-Area }
+}
