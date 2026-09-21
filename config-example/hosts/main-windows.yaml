@@ -13,3 +13,4 @@ runner:
   labels: [self-hosted, Windows, X64, codex-automation]
 execution:
   serialization: global-mutex
+  quiescence_timeout_seconds: 600

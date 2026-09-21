@@ -6,6 +6,7 @@ secret:
   id: codex-auth-example-project
 workflow:
   path: .github/workflows/codex-connectivity-test.yml
+  branch: main
 runner:
   enabled: true
   scope: repository
