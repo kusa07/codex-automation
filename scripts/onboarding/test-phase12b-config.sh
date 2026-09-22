@@ -2,6 +2,13 @@
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 [[ "${BASH:-}" == */bash ]] || { echo 'Git Bash is required for this fixture.' >&2; exit 2; }
+source "$ROOT/scripts/lib/phase12b-config.sh"
+for version in 'version 4.53.6' 'version v4.53.6' 'yq version 4.53.6' 'yq (https://github.com/mikefarah/yq/) version v4.53.6'; do
+  phase12b_is_yq_v4_version "$version" || { echo "valid yq v4 version was rejected: $version" >&2; exit 1; }
+done
+for version in 'version v3.4.1' 'version 3.4.1' 'version v5.0.0' 'version 5.0.0' '' 'unrelated tool 4 version output'; do
+  if phase12b_is_yq_v4_version "$version"; then echo "invalid yq version was accepted: $version" >&2; exit 1; fi
+done
 fixture_cli=true
 run_phase12b() { local script="$1"; shift; if [[ "$fixture_cli" == true ]]; then ( source "$script" "$@" --test-mode --fixture-root "$tmp" ); else ( source "$script" "$@" ); fi; }
 tmp="$(mktemp -d)"
@@ -12,7 +19,7 @@ touch "$tmp/environment.yaml" "$caller" "$tmp/host.yaml"
 cat > "$tmp/bin/yq" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
---version) echo 'yq version 4.44.1';;
+--version) echo 'yq (https://github.com/mikefarah/yq/) version v4.44.1';;
 -e) exit 0;;
 -r) case "$2" in
 *schema_version*) echo 1;;

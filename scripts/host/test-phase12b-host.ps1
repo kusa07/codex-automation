@@ -1,5 +1,7 @@
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'phase12b-host.psm1') -Force
+foreach($version in @('version 4.53.6','version v4.53.6','yq version 4.53.6','yq (https://github.com/mikefarah/yq/) version v4.53.6')){if(-not(Test-Phase12BYqV4Version $version)){throw "valid yq v4 version was rejected: $version"}}
+foreach($version in @('version v3.4.1','version 3.4.1','version v5.0.0','version 5.0.0','','unrelated tool 4 version output')){if(Test-Phase12BYqV4Version $version){throw "invalid yq version was accepted: $version"}}
 $root=Join-Path ([IO.Path]::GetTempPath()) ('phase12b-host-test-'+[guid]::NewGuid().ToString('N'))
 $oldPath=$null
 function Assert-Throws([scriptblock]$Block,[string]$Message){try{& $Block}catch{return};throw $Message}
