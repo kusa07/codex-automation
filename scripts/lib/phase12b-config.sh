@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+phase12b_is_yq_v4_version() {
+  local version="${1:-}"
+  [[ "$version" =~ ^((yq|yq[[:space:]]+\(https://github\.com/mikefarah/yq/\))[[:space:]]+)?version[[:space:]]+v?4\.[0-9]+\.[0-9]+$ ]]
+}
 phase12b_require_yq() {
   command -v yq >/dev/null 2>&1 || { echo 'Required prerequisite not found: yq (mikefarah/yq v4).' >&2; return 127; }
   local version; version="$(yq --version 2>/dev/null || true)"
-  [[ "$version" == *'version 4.'* ]] || { echo "Unsupported yq version: ${version:-unknown}; require yq v4." >&2; return 2; }
+  phase12b_is_yq_v4_version "$version" || { echo "Unsupported yq version: ${version:-unknown}; require yq v4." >&2; return 2; }
 }
 phase12b_require_yaml_file() {
   local file="$1"; [[ -f "$file" ]] || { echo "Configuration file not found: $file" >&2; return 2; }
