@@ -83,6 +83,20 @@ The validated execution path through Phase 9 uses GitHub-hosted ephemeral runner
 
 Phase 10 write-capable execution uses the approved Self-hosted Execution architecture defined in `SELF_HOSTED_EXECUTION.md`.
 
+Phase 10-to-Phase 12B migration remains fail closed. An execution root alone
+is not legacy authority: exact local metadata, immutable repository
+association, GitHub registration and labels, clean execution ownership,
+Service absence, target-root absence, and trusted workflow state must agree.
+Unknown, partial, duplicate, or divergent evidence cannot be adopted or
+automatically repaired.
+
+Migration intent contains identifiers only and is atomically published under
+the automation runtime before target mutation. It contains no credential.
+Runner software comes only from the pinned official HTTPS release and must
+match its pinned SHA-256 before extraction. Migration does not delete the
+legacy directory, change the workflow pin, weaken ACLs, use a personal SID,
+or accept an arbitrary adapter/provider.
+
 A self-hosted machine is a persistent security boundary. State may survive after a job even when cleanup was expected to run.
 
 Therefore Self-hosted Execution must use:

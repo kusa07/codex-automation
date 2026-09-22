@@ -878,6 +878,19 @@ schema mismatchを検出した場合は fail closed とし、明示的なsetup /
 
 migration処理は通常jobとは分離し、明示的に実行・検証できるようにする。
 
+Phase 12Bへの明示migrationでは、通常のhost consistencyとは別に
+`MIGRATION_SOURCE_STATE`を評価する。Phase 10 interactive runnerは、managed
+execution area、execution ownership、local/GitHub runner identity、Service
+不在、target root不在、trusted workflowの全fingerprintが一致する場合だけ
+`LEGACY_PHASE10_INTERACTIVE`となる。partial topologyは
+`UNSUPPORTED_PARTIAL`、identity ambiguityは`CONFLICT`として停止する。
+
+移行は既存execution area markerと`execution_area_id`を再生成しない。
+dispatch fenceとquiescence再確認後にのみlegacy registrationを解除し、
+固定version/checksum検証済みpackageからrepository-ID scoped runnerと
+official Windows Serviceを構成する。`C:\codex-runner`と`_work`は削除せず、
+非authoritativeなretired evidenceとして残す。
+
 自動migrationよりも「古ければ止まる」を初期方針とする。
 
 ---

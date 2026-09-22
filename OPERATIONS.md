@@ -665,3 +665,20 @@ Host migration and production caller workflow switches require quiescence: no
 active or queued workflow, active local execution, held Global Mutex, or
 residual execution state. Batch A supplies the plan contracts only; it does
 not perform those mutations.
+
+### Phase 10 interactive host migration
+
+`scripts/host/migrate-host.ps1` is the sole Batch C entry point. Its plan
+reports both normal `HOST_STATE` and the separate `MIGRATION_SOURCE_STATE`,
+immutable legacy/target identities, quiescence, pinned package provenance,
+and durable migration stage. Only the complete
+`LEGACY_PHASE10_INTERACTIVE` fingerprint may proceed; partial and conflicting
+topologies never mutate automatically.
+
+After approval, an atomic intent is published before target mutation. The
+operation fences new dispatch without changing workflow content, rechecks
+quiescence, preserves the execution-area ID, creates target roots and exact
+ACLs, verifies the pinned package, unregisters the exact legacy registration,
+then installs and verifies the official NETWORK SERVICE runner. Each mutation
+has authoritative read-back before its completed stage is persisted. The old
+runner directory is retained; cleanup is a separate operator task.
