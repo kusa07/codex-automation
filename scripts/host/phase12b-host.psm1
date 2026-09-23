@@ -538,11 +538,29 @@ function Wait-Phase12BCallerQuiescence {
     }
 }
 
+function Get-Phase12BFixedRunnerAdapterArguments {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][ValidateSet('InstallPackage','Register','InstallService','StartService','StopService','Unregister','RemoveService','MigrateRunner','Verify')][string]$Action,
+        [Parameter(Mandatory)]$Host,[Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$RepositoryFullName,[Parameter(Mandatory)][string]$RepositoryId
+    )
+    Assert-Phase12BRepositoryIdentity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
+    $arguments=@{Action=$Action;RunnerRoot=$Identity.RunnerDirectory;Repository=$RepositoryFullName;RepositoryId=$RepositoryId;ServiceName=$Identity.ServiceName;ServiceIdentity=$script:Phase12BServiceIdentity}
+    if($Action -eq 'InstallPackage'){
+        if([string]::IsNullOrWhiteSpace([string]$Host.HostId) -or [string]::IsNullOrWhiteSpace([string]$Host.RunnerRoot) -or [string]::IsNullOrWhiteSpace([string]$Host.RunnerPackagePath)){throw 'Fresh onboarding package authority is incomplete.'}
+        $canonical=Get-Phase12BCallerRunnerIdentity -RunnerRoot ([string]$Host.RunnerRoot) -RepositoryId $RepositoryId
+        if([IO.Path]::GetFullPath([string]$Identity.RunnerDirectory) -ine [IO.Path]::GetFullPath([string]$canonical.RunnerDirectory)){throw 'Fresh onboarding target runner directory contradicts host desired state.'}
+        $arguments.RunnerPackagePath=[string]$Host.RunnerPackagePath
+        $arguments.HostRunnerRoot=[string]$Host.RunnerRoot
+        $arguments.OperationId=Get-Phase12BOnboardPackageOperationId -HostId ([string]$Host.HostId) -RepositoryId $RepositoryId
+    }
+    $arguments
+}
+
 function Invoke-Phase12BFixedRunnerAdapter {
     param([Parameter(Mandatory)][string]$Action,[Parameter(Mandatory)]$Host,[Parameter(Mandatory)]$Identity,[Parameter(Mandatory)][string]$RepositoryFullName,[Parameter(Mandatory)][string]$RepositoryId)
     $adapter=Join-Path $PSScriptRoot 'runner-adapter.ps1'
-    $arguments=@{Action=$Action;RunnerRoot=$Identity.RunnerDirectory;Repository=$RepositoryFullName;RepositoryId=$RepositoryId;ServiceName=$Identity.ServiceName;ServiceIdentity=$script:Phase12BServiceIdentity}
-    if($Action -eq 'InstallPackage'){$arguments.RunnerPackagePath=$Host.RunnerPackagePath}
+    $arguments=Get-Phase12BFixedRunnerAdapterArguments -Action $Action -Host $Host -Identity $Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
     & $adapter @arguments | Out-Null
 }
 
@@ -704,8 +722,7 @@ function Invoke-Phase12BCallerRunner {
                 if($resumeState -in @('ABSENT','REGISTERING')){
                     if($before -eq 'RETIRED'){$retired=Get-Phase12BRunnerMetadataPath -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -State retired;if(Test-Path -LiteralPath $retired){Remove-Item -LiteralPath $retired -Force}}
                     Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState REGISTERING -ServiceName ''|Out-Null
-                    if(-not(Test-Path -LiteralPath $identity.RunnerDirectory -PathType Container)){New-Item -ItemType Directory -Path $identity.RunnerDirectory|Out-Null}
-                    if(-not(Test-Path -LiteralPath (Join-Path $identity.RunnerDirectory 'config.cmd') -PathType Leaf)){Invoke-Phase12BFixedRunnerAdapter -Action InstallPackage -Host $host -Identity $identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId}
+                    Invoke-Phase12BFixedRunnerAdapter -Action InstallPackage -Host $host -Identity $identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
                     $resumeState='REGISTERING'
                 }
                 if($resumeState -in @('REGISTERING','REGISTERED','SERVICE_INSTALLING','SERVICE_INSTALLED')){
@@ -833,6 +850,21 @@ function Get-Phase12BRunnerPackageContract {
         ExpectedAssetDigest="sha256:$Sha256"
         Sha256=$Sha256
     }
+}
+
+function Get-Phase12BOnboardPackageOperationId {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$HostId,
+        [Parameter(Mandatory)][string]$RepositoryId
+    )
+    if($HostId -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$'){throw 'Invalid host identity for onboarding package operation.'}
+    if($RepositoryId -notmatch '^[1-9][0-9]*$'){throw 'Invalid immutable repository ID for onboarding package operation.'}
+    $material=[Text.Encoding]::UTF8.GetBytes("phase12b-onboard-package-v1`0$HostId`0$RepositoryId")
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try{$hash=$sha.ComputeHash($material)}finally{$sha.Dispose()}
+    $guidBytes=[byte[]]::new(16)
+    [Array]::Copy($hash,$guidBytes,16)
+    [guid]::new($guidBytes).ToString('D')
 }
 
 function Test-Phase12BRunnerPackage {
@@ -1214,4 +1246,4 @@ function Invoke-Phase12BMigrationLifecycle {
     [pscustomobject]@{Result='PASS';Stage=$stage;Postcondition='MIGRATION_COMPLETE'}
 }
 
-Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BCompleteRunnerList,Get-Phase12BGitHubRunnerList,Test-Phase12BRunnerPackageTree,Assert-Phase12BRunnerStagingAuthority,Install-Phase12BRunnerPackageAtomically,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle
+Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BOnboardPackageOperationId,Get-Phase12BFixedRunnerAdapterArguments,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BCompleteRunnerList,Get-Phase12BGitHubRunnerList,Test-Phase12BRunnerPackageTree,Assert-Phase12BRunnerStagingAuthority,Install-Phase12BRunnerPackageAtomically,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle

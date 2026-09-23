@@ -11,6 +11,36 @@ try {
   New-Item -ItemType Directory -Path $runtime|Out-Null;if((Get-Phase12BHostState -RuntimeRoot $runtime -ExecutionRoot $execution -HostId host -ProfileRoot $profile -RunnerRoot $runnerRoot) -ne 'INCONSISTENT'){throw 'partial host was accepted'};Remove-Item -LiteralPath $runtime -Recurse -Force
   & $area -Action ensure -Root $execution|Out-Null;New-Item -ItemType Directory -Path $runtime,$profile,$runnerRoot -Force|Out-Null;@{schema=1;host_id='host';service_identity='NT AUTHORITY\NETWORK SERVICE';service_sid='S-1-5-20';execution_root=$execution;runtime_root=$runtime}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $runtime 'runtime.json') -NoNewline
   if((Get-Phase12BHostState -RuntimeRoot $runtime -ExecutionRoot $execution -HostId host -ProfileRoot $profile -RunnerRoot $runnerRoot) -ne 'EXISTING'){throw 'EXISTING host classification failed'}
+  # Fresh production Onboard uses the same operation-bound atomic package
+  # contract as migration.  The argument builder is the production call path,
+  # while the no-op ACL callback is the only test provider substitution.
+  $onboardPackage=Join-Path $root 'onboard-runner.zip'
+  $onboardPackageSource=Join-Path $root 'onboard-package-source';New-Item -ItemType Directory -Path (Join-Path $onboardPackageSource 'bin') -Force|Out-Null
+  foreach($relative in @('config.cmd','run.cmd','bin\Runner.Listener.exe','bin\RunnerService.exe')){New-Item -ItemType File -Path (Join-Path $onboardPackageSource $relative) -Force|Out-Null}
+  Compress-Archive -Path (Join-Path $onboardPackageSource '*') -DestinationPath $onboardPackage
+  $onboardHost=[pscustomobject]@{HostId='host';RunnerRoot=$runnerRoot;RunnerPackagePath=$onboardPackage}
+  $onboardIdentity=Get-Phase12BCallerRunnerIdentity -RunnerRoot $runnerRoot -RepositoryId '12345'
+  $onboardArguments=Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host $onboardHost -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'
+  if([string]$onboardArguments.HostRunnerRoot -cne $runnerRoot -or [string]$onboardArguments.RunnerRoot -cne $onboardIdentity.RunnerDirectory -or [string]$onboardArguments.RunnerPackagePath -cne $onboardPackage){throw 'Fresh Onboard canonical package arguments were not propagated.'}
+  $operationId=[string]$onboardArguments.OperationId;$parsedOperation=[guid]::Empty
+  if(-not[guid]::TryParseExact($operationId,'D',[ref]$parsedOperation)){throw 'Fresh Onboard package operation ID is not filesystem-safe.'}
+  $retryArguments=Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host $onboardHost -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'
+  if([string]$retryArguments.OperationId -cne $operationId){throw 'Fresh Onboard package operation ID changed across retries.'}
+  if((Get-Phase12BOnboardPackageOperationId -HostId host -RepositoryId 67890) -ceq $operationId){throw 'Fresh Onboard package operation ID is not repository-scoped.'}
+  $partialStage=Join-Path $runnerRoot ".migration-staging\$operationId\runner";New-Item -ItemType Directory -Path $partialStage -Force|Out-Null;New-Item -ItemType File -Path (Join-Path $partialStage 'partial.tmp')|Out-Null
+  $publish=Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardArguments.HostRunnerRoot -TargetRunnerDirectory $onboardArguments.RunnerRoot -OperationId $operationId -PackagePath $onboardArguments.RunnerPackagePath -ApplyAcl {}
+  if($publish.State -ne 'PUBLISHED' -or -not(Test-Phase12BRunnerPackageTree $onboardIdentity.RunnerDirectory)){throw 'Fresh Onboard partial staging did not recover through atomic publication.'}
+  if((Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardArguments.HostRunnerRoot -TargetRunnerDirectory $onboardArguments.RunnerRoot -OperationId $operationId -PackagePath $onboardArguments.RunnerPackagePath -ApplyAcl {}).State -ne 'ALREADY_PUBLISHED'){throw 'Fresh Onboard post-publication retry was not idempotent.'}
+  Assert-Throws {Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host ([pscustomobject]@{HostId='host';RunnerRoot='';RunnerPackagePath=$onboardPackage}) -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'} 'missing HostRunnerRoot was accepted'
+  $wrongHostRoot=Join-Path $root 'wrong-runner-root';New-Item -ItemType Directory -Path $wrongHostRoot|Out-Null
+  Assert-Throws {Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host ([pscustomobject]@{HostId='host';RunnerRoot=$wrongHostRoot;RunnerPackagePath=$onboardPackage}) -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'} 'HostRunnerRoot mismatch was accepted'
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory (Join-Path $root 'outside-runner-root') -OperationId $operationId -PackagePath $onboardPackage} 'target outside HostRunnerRoot was accepted'
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory (Join-Path $runnerRoot 'repo-67890') -OperationId '' -PackagePath $onboardPackage} 'missing OperationId was accepted'
+  $partialFinal=Join-Path $runnerRoot 'repo-67890';New-Item -ItemType Directory -Path $partialFinal|Out-Null;New-Item -ItemType File -Path (Join-Path $partialFinal 'partial.tmp')|Out-Null
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory $partialFinal -OperationId (Get-Phase12BOnboardPackageOperationId -HostId host -RepositoryId 67890) -PackagePath $onboardPackage} 'Fresh Onboard partial final root was accepted'
+  $unknownStaging=Join-Path $runnerRoot '.migration-staging\unknown-operation';New-Item -ItemType Directory -Path $unknownStaging -Force|Out-Null
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory (Join-Path $runnerRoot 'repo-67891') -OperationId (Get-Phase12BOnboardPackageOperationId -HostId host -RepositoryId 67891) -PackagePath $onboardPackage} 'Fresh Onboard unknown staging was accepted'
+  if(-not(Test-Path -LiteralPath $unknownStaging -PathType Container)){throw 'Fresh Onboard unknown staging was deleted.'}
   if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 2 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('X64')) -ne 'INCONSISTENT'){throw 'wrong repository ID was accepted'}
   if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 1 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('Windows')) -ne 'INCONSISTENT'){throw 'wrong labels were accepted'}
   if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 1 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('X64') -ExpectedPathName 'a\run.cmd' -ActualPathName 'b\run.cmd') -ne 'INCONSISTENT'){throw 'wrong PathName was accepted'}
