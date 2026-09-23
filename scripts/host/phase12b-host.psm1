@@ -1230,7 +1230,10 @@ function Test-Phase12BMigrationStageTopology {
     if($Stage -notin $script:Phase12BMigrationStages -or $Actual.IdentityConflict -or $Actual.UnknownState -or -not $Actual.LegacyDirectoryRetained){return $false}
     switch($Stage){
       'LEGACY_VERIFIED' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and -not $Actual.DispatchFenced }
-      'DISPATCH_FENCING' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchStateKnown }
+      # There is no provider-visible ownership token for a disabled workflow.
+      # Only an observed active workflow is a safe pre-fence state; disabled at
+      # this durable boundary is ambiguous and requires manual recovery.
+      'DISPATCH_FENCING' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchStateKnown -and -not $Actual.DispatchFenced }
       'DISPATCH_FENCED' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchFenced }
       'QUIESCENT' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchFenced -and $Actual.Quiescent }
       'TARGET_HOST_PREPARED' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchFenced -and $Actual.Quiescent -and $Actual.TargetHostPrepared -and $Actual.PackageVerified -and $Actual.ExecutionAreaIdPreserved -and $Actual.AclExact }
@@ -1269,7 +1272,7 @@ function Invoke-Phase12BMigrationLifecycle {
         return [pscustomobject]@{Result='PASS';Stage=$stage;Postcondition='MIGRATION_COMPLETE'}
     }
     if($stage -eq 'LEGACY_VERIFIED'){if($s.DispatchFenced){throw 'LEGACY_VERIFIED cannot have a preexisting disabled dispatch state.'};Save 'DISPATCH_FENCING';$stage='DISPATCH_FENCING'}
-    if($stage -eq 'DISPATCH_FENCING'){$s=State;if(-not $s.DispatchStateKnown){throw 'Dispatch state is unknown.'};if(-not $s.DispatchFenced){& $Mutate 'FenceDispatch';$s=State};if(-not $s.DispatchFenced){throw 'Dispatch fence read-back failed.'};Save 'DISPATCH_FENCED';$stage='DISPATCH_FENCED'}
+    if($stage -eq 'DISPATCH_FENCING'){$s=State;if(-not $s.DispatchStateKnown){throw 'Dispatch state is unknown.'};if($s.DispatchFenced){throw 'Dispatch fencing ownership is ambiguous; manual intervention is required.'};& $Mutate 'FenceDispatch';$s=State;if(-not $s.DispatchFenced){throw 'Dispatch fence read-back failed.'};Save 'DISPATCH_FENCED';$stage='DISPATCH_FENCED'}
     if($stage -eq 'DISPATCH_FENCED'){$s=State;if(-not $s.Quiescent){& $Mutate 'WaitForQuiescence';$s=State};if(-not $s.Quiescent){throw 'Migration quiescence is not proven.'};Save 'QUIESCENT';$stage='QUIESCENT'}
     if($stage -eq 'QUIESCENT'){if(-not $s.TargetHostPrepared){& $Mutate 'PrepareTargetHost'};$s=State;if(-not($s.TargetHostPrepared -and $s.PackageVerified -and $s.ExecutionAreaIdPreserved -and $s.AclExact)){throw 'Target host preparation read-back failed.'};Save 'TARGET_HOST_PREPARED';$stage='TARGET_HOST_PREPARED'}
     if($stage -eq 'TARGET_HOST_PREPARED'){& $Mutate 'WaitForQuiescence';$s=State;if(-not $s.Quiescent){throw 'Migration quiescence is not proven immediately before unregister.'};Save 'LEGACY_RUNNER_UNREGISTERING';$stage='LEGACY_RUNNER_UNREGISTERING'}
