@@ -11,7 +11,10 @@ $oldPath=$null
 New-Item -ItemType Directory -Path $root|Out-Null
 try {
   $runnerRoot=Join-Path $root 'runner';$runtimeRoot=Join-Path $root 'runtime';$executionRoot=Join-Path $root 'execution';$profileRoot=Join-Path $root 'profile'
-  $hostConfig=Join-Path $root 'host.yaml'
+  $hostConfig=Join-Path $root 'host.yaml';$packagePath=Join-Path $root 'runner-package.zip';$packageSource=Join-Path $root 'runner-package-source'
+  New-Item -ItemType Directory -Path (Join-Path $packageSource 'bin') -Force|Out-Null
+  foreach($relative in @('config.cmd','run.cmd','bin\Runner.Listener.exe','bin\RunnerService.exe')){New-Item -ItemType File -Path (Join-Path $packageSource $relative) -Force|Out-Null}
+  Compress-Archive -Path (Join-Path $packageSource '*') -DestinationPath $packagePath
   @"
 schema_version: 1
 host_id: test-host
@@ -25,6 +28,7 @@ runner:
   mode: windows-service
   service_identity: network-service
   service_sid: S-1-5-20
+  package_path: '$($packagePath -replace '\\','/')'
   labels: [self-hosted, Windows, X64, codex-automation]
 execution:
   serialization: global-mutex
@@ -45,9 +49,10 @@ if "%q%"==".paths.profile_root" echo __PROFILE__
 if "%q%"==".runner.mode" echo windows-service
 if "%q%"==".runner.service_identity" echo network-service
 if "%q%"==".runner.service_sid" echo S-1-5-20
+if "%q%"==".runner.package_path" echo __PACKAGE__
 if "%q%"==".runner.labels[]" (echo self-hosted&echo Windows&echo X64&echo codex-automation)
 if "%q%"==".execution.quiescence_timeout_seconds" echo 5
-'@.Replace('__EXEC__',$executionRoot).Replace('__RUNNER__',$runnerRoot).Replace('__RUNTIME__',$runtimeRoot).Replace('__PROFILE__',$profileRoot) | Set-Content -LiteralPath (Join-Path $bin 'yq.cmd') -NoNewline
+'@.Replace('__EXEC__',$executionRoot).Replace('__RUNNER__',$runnerRoot).Replace('__RUNTIME__',$runtimeRoot).Replace('__PROFILE__',$profileRoot).Replace('__PACKAGE__',$packagePath) | Set-Content -LiteralPath (Join-Path $bin 'yq.cmd') -NoNewline
   $oldPath=$env:PATH;$env:PATH="$bin;$oldPath"
   New-Item -ItemType Directory -Path $runtimeRoot,$profileRoot,$runnerRoot -Force|Out-Null
   & (Join-Path $PSScriptRoot '..\self-hosted\managed-execution-area.ps1') -Action ensure -Root $executionRoot|Out-Null

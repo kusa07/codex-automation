@@ -28,9 +28,10 @@ try {
   if([string]$retryArguments.OperationId -cne $operationId){throw 'Fresh Onboard package operation ID changed across retries.'}
   if((Get-Phase12BOnboardPackageOperationId -HostId host -RepositoryId 67890) -ceq $operationId){throw 'Fresh Onboard package operation ID is not repository-scoped.'}
   $partialStage=Join-Path $runnerRoot ".migration-staging\$operationId\runner";New-Item -ItemType Directory -Path $partialStage -Force|Out-Null;New-Item -ItemType File -Path (Join-Path $partialStage 'partial.tmp')|Out-Null
-  $publish=Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardArguments.HostRunnerRoot -TargetRunnerDirectory $onboardArguments.RunnerRoot -OperationId $operationId -PackagePath $onboardArguments.RunnerPackagePath -ApplyAcl {}
+  $onboardHostRoot=[string]$onboardArguments.HostRunnerRoot;$onboardTarget=[string]$onboardArguments.RunnerRoot;$onboardPackageInput=[string]$onboardArguments.RunnerPackagePath
+  $publish=Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardHostRoot -TargetRunnerDirectory $onboardTarget -OperationId $operationId -PackagePath $onboardPackageInput -ApplyAcl {}
   if($publish.State -ne 'PUBLISHED' -or -not(Test-Phase12BRunnerPackageTree $onboardIdentity.RunnerDirectory)){throw 'Fresh Onboard partial staging did not recover through atomic publication.'}
-  if((Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardArguments.HostRunnerRoot -TargetRunnerDirectory $onboardArguments.RunnerRoot -OperationId $operationId -PackagePath $onboardArguments.RunnerPackagePath -ApplyAcl {}).State -ne 'ALREADY_PUBLISHED'){throw 'Fresh Onboard post-publication retry was not idempotent.'}
+  if((Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardHostRoot -TargetRunnerDirectory $onboardTarget -OperationId $operationId -PackagePath $onboardPackageInput -ApplyAcl {}).State -ne 'ALREADY_PUBLISHED'){throw 'Fresh Onboard post-publication retry was not idempotent.'}
   Assert-Throws {Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host ([pscustomobject]@{HostId='host';RunnerRoot='';RunnerPackagePath=$onboardPackage}) -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'} 'missing HostRunnerRoot was accepted'
   $wrongHostRoot=Join-Path $root 'wrong-runner-root';New-Item -ItemType Directory -Path $wrongHostRoot|Out-Null
   Assert-Throws {Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host ([pscustomobject]@{HostId='host';RunnerRoot=$wrongHostRoot;RunnerPackagePath=$onboardPackage}) -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'} 'HostRunnerRoot mismatch was accepted'
@@ -82,6 +83,9 @@ try {
   foreach($text in 'CODEX_RUNNER_PACKAGE_PATH','CODEX_RUNNER_TOKEN_COMMAND'){if($adapter -match [regex]::Escape($text)){throw "operator environment remained runner authority: $text"}}
   foreach($file in 'bootstrap-host.ps1','migrate-host.ps1','verify-host.ps1'){ $text=Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw;if($text -match 'NOT_IMPLEMENTED_BATCH_A|CREATE_RUNNERS=false|INSTALL_WINDOWS_SERVICES=false|\[string\]\$RunnerAdapter' -or ($file -eq 'bootstrap-host.ps1' -and $text -match '\[string\]\$RunnerPackagePath')){throw "unsafe or empty apply path remains: $file"} }
   # A constrained yq v4 double provides a complete desired-state fixture. No real tool or host is used.
+  $runnerPackage=Join-Path $root 'runner-package.zip';$runnerPackageSource=Join-Path $root 'runner-package-source';New-Item -ItemType Directory -Path (Join-Path $runnerPackageSource 'bin') -Force|Out-Null
+  foreach($relative in @('config.cmd','run.cmd','bin\Runner.Listener.exe','bin\RunnerService.exe')){New-Item -ItemType File -Path (Join-Path $runnerPackageSource $relative) -Force|Out-Null}
+  Compress-Archive -Path (Join-Path $runnerPackageSource '*') -DestinationPath $runnerPackage
   $bin=Join-Path $root 'bin';New-Item -ItemType Directory -Path $bin|Out-Null
   @'
 @echo off
@@ -98,6 +102,7 @@ if "%q%"==".paths.profile_root" echo __PROFILE__
 if "%q%"==".runner.mode" echo windows-service
 if "%q%"==".runner.service_identity" echo network-service
 if "%q%"==".runner.service_sid" echo S-1-5-20
+if "%q%"==".runner.package_path" echo __PACKAGE__
 if "%q%"==".execution.serialization" echo global-mutex
 if "%q%"==".runner.labels[]" (echo self-hosted&echo Windows&echo X64&echo codex-automation)
 if "%q%"==".github.owner_id" echo 32902649
@@ -112,7 +117,7 @@ if "%q%"==".secret.id" echo codex-auth-example
 if "%q%"==".workflow.path" echo .github/workflows/codex-connectivity-test.yml
 if "%q%"==".runner.enabled" echo true
 if "%q%"==".runner.scope" echo repository
-'@.Replace('__EXEC__',$execution).Replace('__RUNNERS__',$runnerRoot).Replace('__RUNTIME__',$runtime).Replace('__PROFILE__',$profile)|Set-Content -LiteralPath (Join-Path $bin 'yq.cmd') -NoNewline
+'@.Replace('__EXEC__',$execution).Replace('__RUNNERS__',$runnerRoot).Replace('__RUNTIME__',$runtime).Replace('__PROFILE__',$profile).Replace('__PACKAGE__',$runnerPackage)|Set-Content -LiteralPath (Join-Path $bin 'yq.cmd') -NoNewline
   New-Item -ItemType Directory -Path (Join-Path $root 'callers')|Out-Null;New-Item -ItemType File -Path (Join-Path $root 'environment.yaml'),(Join-Path $root 'host.yaml'),(Join-Path $root 'callers/example.yaml')|Out-Null
   $rendered=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\templates\caller\codex-connectivity-test.yml.tpl')).Replace('__AUTOMATION_REPOSITORY__','kusa07/codex-automation').Replace('__AUTOMATION_WORKFLOW_PATH__','.github/workflows/codex-run.yml').Replace('__AUTOMATION_WORKFLOW_SHA__','352857a387b1f855920fb8d1587091b31e518c21').Replace('__GOOGLE_CLOUD_PROJECT_ID__','codex-automation-506111').Replace('__WORKLOAD_IDENTITY_PROVIDER__','projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions').Replace('__CODEX_AUTH_SECRET_ID__','codex-auth-example');$content=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($rendered))
   $member='principalSet://iam.googleapis.com/projects/896979145485/locations/global/workloadIdentityPools/github/attribute.repository_id/12345'

@@ -564,6 +564,23 @@ function Invoke-Phase12BFixedRunnerAdapter {
     & $adapter @arguments | Out-Null
 }
 
+function Invoke-Phase12BInstallPackage {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)]$Host,[Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$RepositoryFullName,[Parameter(Mandatory)][string]$RepositoryId,
+        [switch]$TestMode
+    )
+    $arguments=Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host $Host -Identity $Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
+    if($TestMode){
+        # TestMode substitutes only the external ACL mutation provider. The
+        # package contract, staging, validation, and atomic publication remain
+        # the same production primitives and arguments.
+        return Install-Phase12BRunnerPackageAtomically -RunnerRoot $arguments.HostRunnerRoot -TargetRunnerDirectory $arguments.RunnerRoot -OperationId $arguments.OperationId -PackagePath $arguments.RunnerPackagePath -ApplyAcl {}
+    }
+    Invoke-Phase12BFixedRunnerAdapter -Action InstallPackage -Host $Host -Identity $Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
+    [pscustomobject]@{State='PUBLISHED'}
+}
+
 function Get-Phase12BCallerRunnerObservation {
     [CmdletBinding()]param(
         [Parameter(Mandatory)]$Host,[Parameter(Mandatory)][string]$RepositoryFullName,[Parameter(Mandatory)][string]$RepositoryId,
@@ -722,7 +739,7 @@ function Invoke-Phase12BCallerRunner {
                 if($resumeState -in @('ABSENT','REGISTERING')){
                     if($before -eq 'RETIRED'){$retired=Get-Phase12BRunnerMetadataPath -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -State retired;if(Test-Path -LiteralPath $retired){Remove-Item -LiteralPath $retired -Force}}
                     Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState REGISTERING -ServiceName ''|Out-Null
-                    Invoke-Phase12BFixedRunnerAdapter -Action InstallPackage -Host $host -Identity $identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
+                    Invoke-Phase12BInstallPackage -Host $host -Identity $identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId | Out-Null
                     $resumeState='REGISTERING'
                 }
                 if($resumeState -in @('REGISTERING','REGISTERED','SERVICE_INSTALLING','SERVICE_INSTALLED')){
@@ -797,7 +814,13 @@ function Invoke-Phase12BCallerRunner {
             if($before -eq 'RETIRED'){$retired=Get-Phase12BRunnerMetadataPath -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -State retired;if(Test-Path -LiteralPath $retired){Remove-Item -LiteralPath $retired -Force}}
             $testServiceName="actions.runner.$($RepositoryFullName -replace '/','-').$($observation.Identity.RunnerName)"
             $resumeState=if($before -eq 'RETIRED'){'ABSENT'}else{$before}
-            if($resumeState -in @('ABSENT','REGISTERING')){Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState REGISTERING -ServiceName ''|Out-Null;$fixture.local_present=$true;New-Item -ItemType Directory -Path (Join-Path $observation.Identity.RunnerDirectory 'bin') -Force|Out-Null;Set-Content -LiteralPath (Join-Path $observation.Identity.RunnerDirectory 'config.cmd') -Value '@echo off' -NoNewline;Set-Content -LiteralPath (Join-Path $observation.Identity.RunnerDirectory 'bin\RunnerService.exe') -Value 'fixture' -NoNewline;$resumeState='REGISTERING'}
+            if($resumeState -in @('ABSENT','REGISTERING')){
+                Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState REGISTERING -ServiceName ''|Out-Null
+                $packageResult=Invoke-Phase12BInstallPackage -Host $host -Identity $observation.Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId -TestMode
+                if($packageResult.State -notin @('PUBLISHED','ALREADY_PUBLISHED')){throw "Test package publication did not complete: $($packageResult.State)"}
+                $fixture.local_present=$true
+                $resumeState='REGISTERING'
+            }
             if($resumeState -in @('REGISTERING','REGISTERED','SERVICE_INSTALLING')){$fixture.runners=@([pscustomobject]@{name=$observation.Identity.RunnerName;labels=@($host.Labels|ForEach-Object{[pscustomobject]@{name=$_}})});Set-Content -LiteralPath (Join-Path $observation.Identity.RunnerDirectory '.service') -Value $testServiceName -NoNewline;$fixture.services=@([pscustomobject]@{Name=$testServiceName;PathName=('"{0}"' -f (Join-Path $observation.Identity.RunnerDirectory 'bin\RunnerService.exe'));StartName='NT AUTHORITY\NETWORK SERVICE';State='Running'});Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState SERVICE_INSTALLING -ServiceName $testServiceName|Out-Null;Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState SERVICE_INSTALLED -ServiceName $testServiceName|Out-Null;$resumeState='SERVICE_INSTALLED'}
             Write-Phase12BCallerRunnerFixture -FixtureRoot $FixtureRoot -Fixture $fixture
             $transition=Invoke-Phase12BServiceInstalledToActive -Host $host -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId -TestMode -FixtureRoot $FixtureRoot
