@@ -682,6 +682,12 @@ Runner ID/name and execution-area ID are discovered from local/GitHub actual
 state, cross-checked, and then frozen in the migration intent; there is no
 operator-supplied migration-config path.
 
+GitHub runner discovery follows every API page and requires fetched count to
+equal the authoritative `total_count`; malformed, duplicate, truncated, or
+over-limit pagination stops before mutation. Dispatch restoration uses durable
+`DISPATCH_RESTORING` and `DISPATCH_RESTORED` stages so both sides of the final
+restore/read-back persistence window are resumable.
+
 After approval, an atomic intent is published before target mutation. The
 operation fences new dispatch without changing workflow content, rechecks
 quiescence, preserves the execution-area ID, creates target roots and exact
@@ -690,3 +696,7 @@ asset digest and downloaded SHA-256, unregisters the exact legacy registration,
 then installs and verifies the official NETWORK SERVICE runner. Each mutation
 has authoritative read-back before its completed stage is persisted. The old
 runner directory is retained; cleanup is a separate operator task.
+Package extraction occurs only in operation-ID-owned staging under the
+canonical runner root. Required files are validated before a same-volume atomic
+directory move publishes the final runner root; partial final roots and unknown
+staging fail closed.

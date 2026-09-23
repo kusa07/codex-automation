@@ -48,6 +48,9 @@ function Get-TrustedWorkflowState {
     $line=@($output|Where-Object{$_ -match '^WORKFLOW_STATE='});if($line.Count -ne 1){throw 'Trusted workflow classification is missing.'}
     ($line[0] -split '=',2)[1]
 }
+function Get-CompleteGitHubRunners {
+    Get-Phase12BGitHubRunnerList -Repository $caller.Repository
+}
 function Get-LegacySourceObservation {
     if($TestMode){return Read-TestMigrationState}
     $executionInspect=$false;$executionPreflight=$false
@@ -62,10 +65,8 @@ function Get-LegacySourceObservation {
     $filesExact=$legacySafe -and @('config.cmd','run.cmd','.runner','bin\Runner.Listener.exe'|Where-Object{-not(Test-Path -LiteralPath (Join-Path $LegacyRunnerDirectory $_) -PathType Leaf)}).Count -eq 0
     $repoRaw=& gh api "repos/$($caller.Repository)" 2>$null;if($LASTEXITCODE -ne 0){throw 'GitHub repository read-back failed.'}
     $actualRepository=$repoRaw|ConvertFrom-Json -ErrorAction Stop
-    $ghRaw=& gh api "repos/$($caller.Repository)/actions/runners?per_page=100" 2>$null;if($LASTEXITCODE -ne 0){throw 'GitHub runner read-back failed.'}
-    $runnerResponse=$ghRaw|ConvertFrom-Json -ErrorAction Stop
-    if([int]$runnerResponse.total_count -gt 100){throw 'GitHub runner read-back is incomplete; pagination is required.'}
-    $gh=@($runnerResponse.runners)
+    $runnerResponse=Get-CompleteGitHubRunners
+    $gh=@($runnerResponse.Runners)
     $identityMatch=if($runner){Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $runner -CallerRepository $caller.Repository -CallerRepositoryId $caller.RepositoryId -ActualRepositoryId ([string]$actualRepository.id) -GitHubRunners $gh -ExpectedLabels $h.labels}else{$null}
     $services=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object{[string]$_.PathName -like "*$LegacyRunnerDirectory*"})
     $runnerProcesses=@(Get-CimInstance Win32_Process -ErrorAction Stop|Where-Object{[string]$_.ExecutablePath -like "$LegacyRunnerDirectory*"})
@@ -121,8 +122,9 @@ function Get-ActualMigrationState {
         $state|Add-Member -NotePropertyName ActualRepositoryFullName -NotePropertyValue ([string]$repositoryIdentity.ActualRepositoryFullName) -Force
         return $state
     }
+    Assert-Phase12BRunnerStagingAuthority -RunnerRoot $h.runner_root -OperationId $identity.OperationId
     $repositoryIdentity=Get-MigrationRepositoryIdentityState
-    $ghRaw=& gh api "repos/$($caller.Repository)/actions/runners?per_page=100" 2>$null;if($LASTEXITCODE -ne 0){throw 'GitHub runner read-back failed.'};$runners=@(($ghRaw|ConvertFrom-Json -ErrorAction Stop).runners)
+    $runnerResponse=Get-CompleteGitHubRunners;$runners=@($runnerResponse.Runners)
     $legacy=@($runners|Where-Object{[string]$_.id -eq [string]$identity.LegacyRunnerId -and [string]$_.name -ceq [string]$identity.LegacyRunnerName})
     $canonical=@($runners|Where-Object{[string]$_.name -ceq [string]$identity.TargetRunnerName})
     $legacyLabels=if($legacy.Count -eq 1){@($legacy[0].labels|ForEach-Object{[string]$_.name})}else{@()}
@@ -137,7 +139,7 @@ function Get-ActualMigrationState {
     $executionAreaPreserved=$area -and [string]$area.execution_area_id -ceq [string]$identity.ExecutionAreaId
     $aclExact=$true;foreach($root in @($h.runtime_root,$h.profile_root,$h.execution_root,$h.runner_root)){if(-not(Test-Path -LiteralPath $root) -or -not(Test-Phase12BAclPolicy -Acl (Get-Acl -LiteralPath $root))){$aclExact=$false}}
     $packageOk=Test-Phase12BRunnerPackage -Path $h.runner_package_path -ExpectedSha256 $identity.PackageSha256
-    $hostPrepared=$runtime -and (Test-Path -LiteralPath (Join-Path $identity.TargetRunnerDirectory 'config.cmd') -PathType Leaf)
+    $hostPrepared=$runtime -and (Test-Phase12BRunnerPackageTree $identity.TargetRunnerDirectory)
     $serviceExact=$service.Classification -eq 'EXISTING'
     $serviceRunning=$serviceExact -and [string]$service.State -eq 'Running'
     $activeExact=$metadata -and [string]$metadata.lifecycle_state -eq 'ACTIVE' -and $targetOnline -and $serviceRunning -and (Get-Phase12BHostState -RuntimeRoot $h.runtime_root -ExecutionRoot $h.execution_root -HostId $h.host_id -ProfileRoot $h.profile_root -RunnerRoot $h.runner_root) -eq 'EXISTING'
@@ -158,15 +160,16 @@ function Invoke-MigrationMutation([string]$Name){
       'WaitForQuiescence'{$quiet=Wait-Phase12BCallerQuiescence -ExecutionRoot $h.execution_root -RepositoryId $caller.RepositoryId -RepositoryFullName $caller.Repository -TimeoutSeconds ([int]$h.quiescence_timeout_seconds);if($quiet.Result -ne 'PASS'){throw "Migration quiescence failed: $($quiet.Detail)"}}
       'PrepareTargetHost'{
         Assert-OfficialRunnerPackageProvenance
+        if(Test-Path -LiteralPath $h.runner_root){Assert-Phase12BRunnerStagingAuthority -RunnerRoot $h.runner_root -OperationId $identity.OperationId}
         foreach($root in @($h.profile_root,$h.runner_root)){New-Item -ItemType Directory -Path $root -Force|Out-Null}
         foreach($root in @($h.runtime_root,$h.profile_root,$h.execution_root,$h.runner_root)){Invoke-Phase12BAction -Name ApplyAcl -Argument $root}
         $packageDirectory=Split-Path -Parent $h.runner_package_path
-        foreach($directory in @((Join-Path $h.runtime_root 'migration'),$packageDirectory,$identity.TargetRunnerDirectory)){New-Item -ItemType Directory -Path $directory -Force|Out-Null;Invoke-Phase12BAction -Name ApplyAcl -Argument $directory}
+        foreach($directory in @((Join-Path $h.runtime_root 'migration'),$packageDirectory)){New-Item -ItemType Directory -Path $directory -Force|Out-Null;Invoke-Phase12BAction -Name ApplyAcl -Argument $directory}
         $runtimeJson=@{schema=1;host_id=$h.host_id;service_identity='NT AUTHORITY\NETWORK SERVICE';service_sid='S-1-5-20';execution_root=$h.execution_root;runtime_root=$h.runtime_root}|ConvertTo-Json -Compress
         Invoke-Phase12BAction -Name WriteRuntime -Argument (Join-Path $h.runtime_root 'runtime.json') -RuntimeJson $runtimeJson
         if(-not(Test-Path -LiteralPath $h.runner_package_path -PathType Leaf)){$tmp=$h.runner_package_path+'.'+[guid]::NewGuid().ToString('N')+'.tmp';try{Invoke-WebRequest -Uri $package.Uri -OutFile $tmp -UseBasicParsing;if(-not(Test-Phase12BRunnerPackage $tmp -ExpectedSha256 $package.Sha256)){throw 'Runner package checksum verification failed.'};[IO.File]::Move($tmp,$h.runner_package_path)}finally{if(Test-Path -LiteralPath $tmp){Remove-Item -LiteralPath $tmp -Force}}}
         if(-not(Test-Phase12BRunnerPackage $h.runner_package_path -ExpectedSha256 $package.Sha256)){throw 'Runner package checksum verification failed.'}
-        if(-not(Test-Path -LiteralPath (Join-Path $identity.TargetRunnerDirectory 'config.cmd') -PathType Leaf)){& (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Action InstallPackage -RunnerRoot $identity.TargetRunnerDirectory -Repository $caller.Repository -RepositoryId $caller.RepositoryId -RunnerPackagePath $h.runner_package_path|Out-Null}
+        & (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Action InstallPackage -RunnerRoot $identity.TargetRunnerDirectory -HostRunnerRoot $h.runner_root -OperationId $identity.OperationId -Repository $caller.Repository -RepositoryId $caller.RepositoryId -RunnerPackagePath $h.runner_package_path|Out-Null
       }
       'UnregisterLegacy'{& (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Action Unregister -RunnerRoot $identity.LegacyRunnerDirectory -Repository $caller.Repository -RepositoryId $caller.RepositoryId|Out-Null}
       'RegisterTarget'{& (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Action Register -RunnerRoot $identity.TargetRunnerDirectory -Repository $caller.Repository -RepositoryId $caller.RepositoryId|Out-Null}
@@ -181,12 +184,12 @@ function Invoke-MigrationMutation([string]$Name){
 Assert-OfficialRunnerPackageProvenance
 $intent=Read-Phase12BMigrationIntent -RuntimeRoot $h.runtime_root
 if($intent){
-    $identity=[pscustomobject]@{RepositoryId=[string]$intent.repository_id;RepositoryFullName=[string]$intent.repository_full_name;LegacyRunnerDirectory=[string]$intent.legacy_runner_directory;LegacyRunnerId=[string]$intent.legacy_runner_id;LegacyRunnerName=[string]$intent.legacy_runner_name;ExecutionAreaId=[string]$intent.execution_area_id;TargetRunnerDirectory=[string]$intent.target_runner_directory;TargetRunnerName=[string]$intent.target_runner_name;PackageVersion=[string]$intent.package_version;PackageSha256=[string]$intent.package_sha256}
+    $identity=[pscustomobject]@{OperationId=[string]$intent.operation_id;RepositoryId=[string]$intent.repository_id;RepositoryFullName=[string]$intent.repository_full_name;LegacyRunnerDirectory=[string]$intent.legacy_runner_directory;LegacyRunnerId=[string]$intent.legacy_runner_id;LegacyRunnerName=[string]$intent.legacy_runner_name;ExecutionAreaId=[string]$intent.execution_area_id;TargetRunnerDirectory=[string]$intent.target_runner_directory;TargetRunnerName=[string]$intent.target_runner_name;PackageVersion=[string]$intent.package_version;PackageSha256=[string]$intent.package_sha256}
     if($identity.RepositoryId -cne [string]$caller.RepositoryId -or $identity.RepositoryFullName -cne [string]$caller.Repository -or $identity.LegacyRunnerDirectory -cne $LegacyRunnerDirectory -or $identity.TargetRunnerDirectory -cne [string]$target.RunnerDirectory -or $identity.TargetRunnerName -cne [string]$target.RunnerName -or $identity.PackageVersion -cne [string]$package.Version -or $identity.PackageSha256 -cne [string]$package.Sha256){throw 'Migration intent contradicts desired immutable identity.'}
     $sourceState='LEGACY_PHASE10_INTERACTIVE';$stage=[string]$intent.migration_stage
 } else {
     $source=Get-LegacySourceObservation;$sourceState=Get-Phase12BMigrationSourceState $source
-    $identity=[pscustomobject]@{RepositoryId=[string]$caller.RepositoryId;RepositoryFullName=[string]$caller.Repository;LegacyRunnerDirectory=$LegacyRunnerDirectory;LegacyRunnerId=[string]$source.legacy_runner_id;LegacyRunnerName=[string]$source.legacy_runner_name;ExecutionAreaId=[string]$source.execution_area_id;TargetRunnerDirectory=[string]$target.RunnerDirectory;TargetRunnerName=[string]$target.RunnerName;PackageVersion=[string]$package.Version;PackageSha256=[string]$package.Sha256}
+    $identity=[pscustomobject]@{OperationId=[guid]::NewGuid().ToString('D');RepositoryId=[string]$caller.RepositoryId;RepositoryFullName=[string]$caller.Repository;LegacyRunnerDirectory=$LegacyRunnerDirectory;LegacyRunnerId=[string]$source.legacy_runner_id;LegacyRunnerName=[string]$source.legacy_runner_name;ExecutionAreaId=[string]$source.execution_area_id;TargetRunnerDirectory=[string]$target.RunnerDirectory;TargetRunnerName=[string]$target.RunnerName;PackageVersion=[string]$package.Version;PackageSha256=[string]$package.Sha256}
     $stage='NOT_STARTED'
 }
 if($intent){$actualForPlan=Get-ActualMigrationState;$quiescence=[bool]$actualForPlan.Quiescent;$recovery=if(Test-Phase12BMigrationStageTopology -Stage $stage -Actual $actualForPlan){'RESUME_SAFE'}else{'MANUAL_INTERVENTION_REQUIRED'}}else{$quiescence=[string]$source.CurrentRunState -eq 'ABSENT' -and [string]$source.MutexState -eq 'FREE' -and [int]$source.ActiveGitHubJobCount -eq 0;$recovery=if($sourceState -eq 'LEGACY_PHASE10_INTERACTIVE'){'RETRY_SAFE'}else{'MANUAL_INTERVENTION_REQUIRED'}}

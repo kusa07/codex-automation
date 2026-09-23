@@ -128,14 +128,13 @@ function Get-Phase12BExternalCallerState {
  try {
    $repo=Read-Json { & $gh.Source api "repos/$($Caller.Repository)" } 'GitHub repository metadata'
    $branch=[string]$repo.default_branch;if([string]::IsNullOrWhiteSpace($branch) -or $branch -notmatch '^[A-Za-z0-9._/-]+$'){throw 'GitHub default branch metadata is invalid.'}
-   $runners=Read-Json { & $gh.Source api "repos/$($Caller.Repository)/actions/runners?per_page=100" } 'GitHub repository runner metadata'
-   if([int]$runners.total_count -gt 100){throw 'Runner read-back is incomplete; pagination is required.'}
+   $runnerListing=Get-Phase12BGitHubRunnerList -Repository $Caller.Repository -GhPath $gh.Source
    $workflow=Read-Json { & $gh.Source api ("repos/{0}/contents/{1}?ref={2}" -f $Caller.Repository,$Caller.WorkflowPath,[uri]::EscapeDataString($branch)) } 'GitHub caller workflow'
    $versions=Read-Json { & $gcloud.Source secrets versions list $Caller.SecretId --project=$Config.EnvironmentData.project_id --format=json } 'Secret metadata'
    $iam=Read-Json { & $gcloud.Source secrets get-iam-policy $Caller.SecretId --project=$Config.EnvironmentData.project_id --format=json } 'Secret IAM metadata'
    $p=$Config.EnvironmentData.provider_resource -split '/';if($p.Count -ne 8){throw 'Invalid WIF Provider resource path.'}
    $provider=Read-Json { & $gcloud.Source iam workload-identity-pools providers describe $p[7] --project=$Config.EnvironmentData.project_id --location=global --workload-identity-pool=$p[5] --format=json } 'WIF Provider metadata'
-   [pscustomobject]@{RepositoryId=[string]$repo.id;DefaultBranch=$branch;WorkflowBranch=$branch;Runners=@($runners.runners);SecretVersions=@($versions);Iam=$iam;Provider=$provider;WorkflowContent=[string]$workflow.content}
+   [pscustomobject]@{RepositoryId=[string]$repo.id;DefaultBranch=$branch;WorkflowBranch=$branch;Runners=@($runnerListing.Runners);SecretVersions=@($versions);Iam=$iam;Provider=$provider;WorkflowContent=[string]$workflow.content}
  } catch { throw "External metadata read-back failed: $($_.Exception.Message)" }
 }
 function Test-Phase12BExternalCallerState {
@@ -576,7 +575,7 @@ function Get-Phase12BCallerRunnerObservation {
         try { $repoRaw=& $gh.Source api "repos/$RepositoryFullName" 2>$null;if($LASTEXITCODE -ne 0){throw 'repository query failed'};$repo=$repoRaw|ConvertFrom-Json -ErrorAction Stop } catch { throw "GitHub repository read-back failed: $($_.Exception.Message)" }
         $actualRepositoryId=[string]$repo.id
         $actualRepositoryFullName=[string]$repo.full_name
-        try { $runnerRaw=& $gh.Source api "repos/$RepositoryFullName/actions/runners?per_page=100" 2>$null;if($LASTEXITCODE -ne 0){throw 'runner query failed'};$runnerResponse=$runnerRaw|ConvertFrom-Json -ErrorAction Stop;if([int]$runnerResponse.total_count -gt 100){throw 'runner pagination is incomplete'};$runnerRecords=@($runnerResponse.runners) } catch { throw "GitHub runner read-back failed: $($_.Exception.Message)" }
+        try { $runnerResponse=Get-Phase12BGitHubRunnerList -Repository $RepositoryFullName -GhPath $gh.Source;$runnerRecords=@($runnerResponse.Runners) } catch { throw "GitHub runner read-back failed: $($_.Exception.Message)" }
         $localPresent=Test-Path -LiteralPath $identity.RunnerDirectory -PathType Container
         try { $serviceRecords=@(Get-CimInstance Win32_Service -ErrorAction Stop) } catch { throw "Windows Service read-back failed: $($_.Exception.Message)" }
         $fixture=$null
@@ -816,7 +815,7 @@ $script:Phase12BMigrationStages=@(
     'LEGACY_RUNNER_UNREGISTERING','LEGACY_RUNNER_UNREGISTERED',
     'TARGET_RUNNER_REGISTERING','TARGET_RUNNER_REGISTERED',
     'SERVICE_INSTALLING','SERVICE_INSTALLED','SERVICE_RUNNING',
-    'ACTIVE_VERIFIED','MIGRATION_COMPLETE'
+    'ACTIVE_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','MIGRATION_COMPLETE'
 )
 function Get-Phase12BRunnerPackageContract {
     [CmdletBinding()]param(
@@ -850,6 +849,144 @@ function Test-Phase12BRunnerReleaseAsset {
     [string]$asset.browser_download_url -ceq [string]$Contract.Uri -and
         [string]$asset.digest -ceq [string]$Contract.ExpectedAssetDigest -and
         [string]$asset.state -ceq 'uploaded'
+}
+
+function Get-Phase12BCompleteRunnerList {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][scriptblock]$FetchPages,
+        [ValidateRange(1,100)][int]$PageSize=100,
+        [ValidateRange(1,100)][int]$MaxPages=100
+    )
+    try{$pages=@(& $FetchPages)}catch{throw 'GitHub runner pagination read-back failed.'}
+    if($pages.Count -eq 0 -or $pages.Count -gt $MaxPages){throw 'GitHub runner pagination is incomplete or exceeds the safety limit.'}
+    $totalCount=-1
+    foreach($page in $pages){
+        if($null -eq $page -or $null -eq $page.PSObject.Properties['total_count'] -or $null -eq $page.PSObject.Properties['runners']){throw 'GitHub runner page is malformed.'}
+        $parsed=0
+        if(-not[int]::TryParse([string]$page.total_count,[ref]$parsed) -or $parsed -lt 0){throw 'GitHub runner total_count is malformed.'}
+        if($totalCount -lt 0){$totalCount=$parsed}elseif($totalCount -ne $parsed){throw 'GitHub runner total_count changed during pagination.'}
+    }
+    $expectedPages=[Math]::Max(1,[int][Math]::Ceiling($totalCount/[double]$PageSize))
+    if($expectedPages -gt $MaxPages -or $pages.Count -ne $expectedPages){throw 'GitHub runner page count does not match total_count.'}
+    $runners=[Collections.Generic.List[object]]::new()
+    $ids=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    for($index=0;$index -lt $pages.Count;$index++){
+        $pageRunners=@($pages[$index].runners)
+        $expectedCount=if($index -lt ($expectedPages-1)){$PageSize}else{$totalCount-($PageSize*$index)}
+        if($pageRunners.Count -ne $expectedCount){throw 'GitHub runner page is truncated or over-complete.'}
+        foreach($runner in $pageRunners){
+            $id=if($runner -and $runner.PSObject.Properties['id']){[string]$runner.id}else{''}
+            $name=if($runner -and $runner.PSObject.Properties['name']){[string]$runner.name}else{''}
+            if($id -notmatch '^[1-9][0-9]*$' -or $name -notmatch '^[A-Za-z0-9_.-]+$'){throw 'GitHub runner identity is malformed.'}
+            if(-not $ids.Add($id)){throw 'GitHub runner pagination returned a duplicate runner ID.'}
+            [void]$runners.Add($runner)
+        }
+    }
+    if($runners.Count -ne $totalCount){throw 'GitHub runner fetched count does not match total_count.'}
+    [pscustomobject]@{TotalCount=$totalCount;PageCount=$pages.Count;Runners=$runners.ToArray()}
+}
+
+function Get-Phase12BGitHubRunnerList {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$Repository,
+        [string]$GhPath
+    )
+    if($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'){throw 'Invalid repository identity for runner read-back.'}
+    if([string]::IsNullOrWhiteSpace($GhPath)){$GhPath=(Get-Command gh -ErrorAction Stop).Source}
+    Get-Phase12BCompleteRunnerList -FetchPages {
+        $raw=& $GhPath api --paginate --slurp "repos/$Repository/actions/runners?per_page=100" 2>$null
+        if($LASTEXITCODE -ne 0){throw 'GitHub runner pagination failed.'}
+        try{@(($raw|Out-String|ConvertFrom-Json -ErrorAction Stop))}catch{throw 'GitHub runner pagination returned malformed JSON.'}
+    }
+}
+
+function Test-Phase12BRunnerPackageTree {
+    [CmdletBinding()]param([Parameter(Mandatory)][string]$Root)
+    if(-not(Test-Path -LiteralPath $Root -PathType Container) -or -not(Test-Phase12BNoReparse $Root)){return $false}
+    foreach($relative in @('config.cmd','run.cmd','bin\Runner.Listener.exe','bin\RunnerService.exe')){
+        $path=Join-Path $Root $relative
+        if(-not(Test-Path -LiteralPath $path -PathType Leaf) -or -not(Test-Phase12BNoReparse $path)){return $false}
+    }
+    $true
+}
+
+function Assert-Phase12BRunnerStagingAuthority {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$RunnerRoot,
+        [Parameter(Mandatory)][string]$OperationId
+    )
+    $operationGuid=[guid]::Empty
+    if(-not[guid]::TryParseExact($OperationId,'D',[ref]$operationGuid)){throw 'Migration operation ID is invalid.'}
+    if(-not(Test-Path -LiteralPath $RunnerRoot)){return}
+    $root=[IO.Path]::GetFullPath($RunnerRoot)
+    if(-not(Test-Path -LiteralPath $root -PathType Container) -or -not(Test-Phase12BNoReparse $root)){throw 'Runner root is missing or unsafe.'}
+    $stagingRoot=Join-Path $root '.migration-staging'
+    if(-not(Test-Path -LiteralPath $stagingRoot)){return}
+    if(-not(Test-Path -LiteralPath $stagingRoot -PathType Container) -or -not(Test-Phase12BNoReparse $stagingRoot)){throw 'Runner package staging root is unsafe.'}
+    $unexpected=@(Get-ChildItem -LiteralPath $stagingRoot -Force|Where-Object{$_.Name -cne $OperationId})
+    if($unexpected.Count -ne 0){throw 'Unknown runner package staging state requires operator review.'}
+    $operationRoot=Join-Path $stagingRoot $OperationId
+    if(Test-Path -LiteralPath $operationRoot){
+        if(-not(Test-Path -LiteralPath $operationRoot -PathType Container) -or -not(Test-Phase12BNoReparse $operationRoot)){throw 'Current migration staging is unsafe.'}
+        $entries=@(Get-ChildItem -LiteralPath $operationRoot -Force)
+        if(@($entries|Where-Object{$_.Name -cne 'runner'}).Count -ne 0){throw 'Current migration staging contains unknown content.'}
+        $stagingRunner=Join-Path $operationRoot 'runner'
+        if(Test-Path -LiteralPath $stagingRunner){
+            if(-not(Test-Path -LiteralPath $stagingRunner -PathType Container) -or -not(Test-Phase12BNoReparse $stagingRunner)){throw 'Current runner package staging tree is unsafe.'}
+        }
+    }
+}
+
+function Install-Phase12BRunnerPackageAtomically {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$RunnerRoot,
+        [Parameter(Mandatory)][string]$TargetRunnerDirectory,
+        [Parameter(Mandatory)][string]$OperationId,
+        [Parameter(Mandatory)][string]$PackagePath,
+        [scriptblock]$ApplyAcl
+    )
+    Assert-Phase12BRunnerStagingAuthority -RunnerRoot $RunnerRoot -OperationId $OperationId
+    $root=[IO.Path]::GetFullPath($RunnerRoot);$target=[IO.Path]::GetFullPath($TargetRunnerDirectory)
+    if(-not(Test-Path -LiteralPath $root -PathType Container) -or -not(Test-Phase12BNoReparse $root)){throw 'Runner root is missing or unsafe.'}
+    if([IO.Path]::GetFullPath((Split-Path -Parent $target)) -ine $root){throw 'Target runner directory must be a direct child of the canonical runner root.'}
+    if(-not(Test-Path -LiteralPath $PackagePath -PathType Leaf) -or -not(Test-Phase12BNoReparse $PackagePath)){throw 'Runner package path is missing or unsafe.'}
+    $stagingRoot=Join-Path $root '.migration-staging';$operationRoot=Join-Path $stagingRoot $OperationId;$stagingRunner=Join-Path $operationRoot 'runner'
+    if(Test-Path -LiteralPath $target){
+        if(-not(Test-Phase12BRunnerPackageTree $target)){throw 'Final runner root is partial or unexpected.'}
+        if(Test-Path -LiteralPath $operationRoot){
+            if(-not(Test-Phase12BNoReparse $operationRoot) -or @(Get-ChildItem -LiteralPath $operationRoot -Force).Count -ne 0){throw 'Published runner root conflicts with current migration staging.'}
+            Remove-Item -LiteralPath $operationRoot -Force
+        }
+        if($ApplyAcl){& $ApplyAcl $target}
+        return [pscustomobject]@{State='ALREADY_PUBLISHED';Target=$target;Staging=$stagingRunner}
+    }
+    if(Test-Path -LiteralPath $operationRoot){
+        if(-not(Test-Phase12BNoReparse $operationRoot)){throw 'Current migration staging is unsafe.'}
+        $entries=@(Get-ChildItem -LiteralPath $operationRoot -Force)
+        if(@($entries|Where-Object{$_.Name -cne 'runner'}).Count -ne 0){throw 'Current migration staging contains unknown content.'}
+        if(Test-Path -LiteralPath $stagingRunner){
+            if(-not(Test-Phase12BRunnerPackageTree $stagingRunner)){
+                $resolvedOperation=[IO.Path]::GetFullPath($operationRoot);$resolvedStaging=[IO.Path]::GetFullPath($stagingRoot)+[IO.Path]::DirectorySeparatorChar
+                if(-not $resolvedOperation.StartsWith($resolvedStaging,[StringComparison]::OrdinalIgnoreCase)){throw 'Refusing unsafe staging cleanup.'}
+                Remove-Item -LiteralPath $operationRoot -Recurse -Force
+            }
+        }
+    }
+    if(-not(Test-Path -LiteralPath $stagingRunner -PathType Container)){
+        New-Item -ItemType Directory -Path $stagingRunner -Force|Out-Null
+        if($ApplyAcl){foreach($path in @($stagingRoot,$operationRoot,$stagingRunner)){& $ApplyAcl $path}}
+        Expand-Archive -LiteralPath $PackagePath -DestinationPath $stagingRunner -ErrorAction Stop
+    }
+    if(-not(Test-Phase12BRunnerPackageTree $stagingRunner)){throw 'Extracted runner package tree is incomplete.'}
+    if(Test-Path -LiteralPath $target){throw 'Final runner root appeared before atomic publication.'}
+    [IO.Directory]::Move($stagingRunner,$target)
+    if(-not(Test-Phase12BRunnerPackageTree $target)){throw 'Published runner root failed read-back.'}
+    if($ApplyAcl){& $ApplyAcl $target}
+    if(Test-Path -LiteralPath $operationRoot){
+        if(@(Get-ChildItem -LiteralPath $operationRoot -Force).Count -ne 0){throw 'Migration staging was not empty after publication.'}
+        Remove-Item -LiteralPath $operationRoot -Force
+    }
+    [pscustomobject]@{State='PUBLISHED';Target=$target;Staging=$stagingRunner}
 }
 
 function Get-Phase12BMigrationRepositoryIdentityMatch {
@@ -933,7 +1070,7 @@ function Get-Phase12BMigrationIntentPath {
 
 function Test-Phase12BMigrationIntent {
     [CmdletBinding()]param([Parameter(Mandatory)]$Intent)
-    $required=@('schema','operation','source_state','repository_id','repository_full_name','legacy_runner_directory','legacy_runner_id','legacy_runner_name','execution_area_id','target_runner_directory','target_runner_name','package_version','package_sha256','migration_stage','state_entered_at')
+    $required=@('schema','operation','operation_id','source_state','repository_id','repository_full_name','legacy_runner_directory','legacy_runner_id','legacy_runner_name','execution_area_id','target_runner_directory','target_runner_name','package_version','package_sha256','migration_stage','state_entered_at')
     $actual=@($Intent.PSObject.Properties.Name|Sort-Object)
     if(@(Compare-Object ($required|Sort-Object) $actual).Count -ne 0){return $false}
     if([string]$Intent.schema -ne '1' -or [string]$Intent.operation -cne 'PHASE12B_LEGACY_HOST_MIGRATION' -or [string]$Intent.source_state -cne 'LEGACY_PHASE10_INTERACTIVE'){return $false}
@@ -941,6 +1078,7 @@ function Test-Phase12BMigrationIntent {
     if(-not[IO.Path]::IsPathRooted([string]$Intent.legacy_runner_directory) -or -not[IO.Path]::IsPathRooted([string]$Intent.target_runner_directory)){return $false}
     if([string]$Intent.legacy_runner_id -notmatch '^[1-9][0-9]*$' -or [string]$Intent.legacy_runner_name -notmatch '^[A-Za-z0-9_.-]+$' -or [string]$Intent.target_runner_name -notmatch '^codex-repo-[1-9][0-9]*$'){return $false}
     if([string]$Intent.package_version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or [string]$Intent.package_sha256 -notmatch '^[0-9a-f]{64}$'){return $false}
+    $operationGuid=[guid]::Empty;if(-not[guid]::TryParseExact([string]$Intent.operation_id,'D',[ref]$operationGuid)){return $false}
     $guid=[guid]::Empty;if(-not[guid]::TryParse([string]$Intent.execution_area_id,[ref]$guid)){return $false}
     if([string]$Intent.migration_stage -notin $script:Phase12BMigrationStages){return $false}
     $timestamp=[DateTimeOffset]::MinValue
@@ -966,7 +1104,7 @@ function Write-Phase12BMigrationIntent {
     $path=Get-Phase12BMigrationIntentPath $RuntimeRoot;$directory=Split-Path -Parent $path
     if(-not(Test-Path -LiteralPath $directory -PathType Container)){New-Item -ItemType Directory -Path $directory -Force|Out-Null}
     if(-not(Test-Phase12BNoReparse $directory)){throw 'Migration intent directory is unsafe.'}
-    $intent=[ordered]@{schema=1;operation='PHASE12B_LEGACY_HOST_MIGRATION';source_state='LEGACY_PHASE10_INTERACTIVE';repository_id=[string]$Identity.RepositoryId;repository_full_name=[string]$Identity.RepositoryFullName;legacy_runner_directory=[IO.Path]::GetFullPath([string]$Identity.LegacyRunnerDirectory);legacy_runner_id=[string]$Identity.LegacyRunnerId;legacy_runner_name=[string]$Identity.LegacyRunnerName;execution_area_id=[string]$Identity.ExecutionAreaId;target_runner_directory=[IO.Path]::GetFullPath([string]$Identity.TargetRunnerDirectory);target_runner_name=[string]$Identity.TargetRunnerName;package_version=[string]$Identity.PackageVersion;package_sha256=[string]$Identity.PackageSha256;migration_stage=$Stage;state_entered_at=[DateTimeOffset]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)}
+    $intent=[ordered]@{schema=1;operation='PHASE12B_LEGACY_HOST_MIGRATION';operation_id=[string]$Identity.OperationId;source_state='LEGACY_PHASE10_INTERACTIVE';repository_id=[string]$Identity.RepositoryId;repository_full_name=[string]$Identity.RepositoryFullName;legacy_runner_directory=[IO.Path]::GetFullPath([string]$Identity.LegacyRunnerDirectory);legacy_runner_id=[string]$Identity.LegacyRunnerId;legacy_runner_name=[string]$Identity.LegacyRunnerName;execution_area_id=[string]$Identity.ExecutionAreaId;target_runner_directory=[IO.Path]::GetFullPath([string]$Identity.TargetRunnerDirectory);target_runner_name=[string]$Identity.TargetRunnerName;package_version=[string]$Identity.PackageVersion;package_sha256=[string]$Identity.PackageSha256;migration_stage=$Stage;state_entered_at=[DateTimeOffset]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)}
     if(-not(Test-Phase12BMigrationIntent ([pscustomobject]$intent))){throw 'Refusing invalid migration intent.'}
     $temp=Join-Path $directory ('.host-migration.'+[guid]::NewGuid().ToString('N')+'.tmp');$backup=Join-Path $directory ('.host-migration.'+[guid]::NewGuid().ToString('N')+'.bak')
     try{$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($intent|ConvertTo-Json -Compress));$stream=[IO.FileStream]::new($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough);try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()};if(Test-Path -LiteralPath $path){[IO.File]::Replace($temp,$path,$backup,$true);Remove-Item -LiteralPath $backup -Force}else{[IO.File]::Move($temp,$path)}}finally{if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Force};if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force}}
@@ -1032,7 +1170,11 @@ function Test-Phase12BMigrationStageTopology {
       'SERVICE_INSTALLING' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.DispatchFenced }
       'SERVICE_INSTALLED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceInstalled -and $Actual.ServiceExact -and $Actual.DispatchFenced }
       'SERVICE_RUNNING' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.DispatchFenced }
-      'ACTIVE_VERIFIED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact -and $Actual.DispatchFenced }
+      # ACTIVE_VERIFIED with dispatch already restored is the legacy post-restore,
+      # pre-persistence crash window.  All other exact postconditions still apply.
+      'ACTIVE_VERIFIED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact }
+      'DISPATCH_RESTORING' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact }
+      'DISPATCH_RESTORED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact -and -not $Actual.DispatchFenced }
       'MIGRATION_COMPLETE' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact -and -not $Actual.DispatchFenced -and $Actual.ExecutionAreaIdPreserved }
     }
     $false
@@ -1066,8 +1208,10 @@ function Invoke-Phase12BMigrationLifecycle {
     if($stage -eq 'SERVICE_INSTALLING'){if(-not $s.ServiceInstalled){& $Mutate 'InstallService'};$s=State;if(-not $s.ServiceInstalled){throw 'Official Service installation read-back failed.'};Save 'SERVICE_INSTALLED';$stage='SERVICE_INSTALLED'}
     if($stage -eq 'SERVICE_INSTALLED'){if(-not $s.ServiceRunning){& $Mutate 'StartService'};$s=State;if(-not($s.ServiceRunning -and $s.ServiceExact)){throw 'Service Running read-back failed.'};Save 'SERVICE_RUNNING';$stage='SERVICE_RUNNING'}
     if($stage -eq 'SERVICE_RUNNING'){if(-not $s.ActiveExact){& $Mutate 'WriteActiveMetadata'};$s=State;if(-not($s.ActiveExact -and $s.ExecutionAreaIdPreserved)){throw 'ACTIVE verification failed.'};Save 'ACTIVE_VERIFIED';$stage='ACTIVE_VERIFIED'}
-    if($stage -eq 'ACTIVE_VERIFIED'){if($s.DispatchFenced){& $Mutate 'RestoreDispatch'};$s=State;if($s.DispatchFenced -or -not $s.LegacyDirectoryRetained){throw 'Migration completion read-back failed.'};Save 'MIGRATION_COMPLETE';$stage='MIGRATION_COMPLETE'}
+    if($stage -eq 'ACTIVE_VERIFIED'){Save 'DISPATCH_RESTORING';$stage='DISPATCH_RESTORING'}
+    if($stage -eq 'DISPATCH_RESTORING'){if($s.DispatchFenced){& $Mutate 'RestoreDispatch'};$s=State;if($s.DispatchFenced -or -not($s.ActiveExact -and $s.TargetRegistered -and $s.ServiceRunning -and $s.ServiceExact -and $s.ExecutionAreaIdPreserved -and $s.LegacyDirectoryRetained) -or $s.LegacyRegistered){throw 'Dispatch restoration read-back failed.'};Save 'DISPATCH_RESTORED';$stage='DISPATCH_RESTORED'}
+    if($stage -eq 'DISPATCH_RESTORED'){$s=State;if($s.DispatchFenced -or -not($s.ActiveExact -and $s.TargetRegistered -and $s.ServiceRunning -and $s.ServiceExact -and $s.ExecutionAreaIdPreserved -and $s.LegacyDirectoryRetained) -or $s.LegacyRegistered){throw 'Migration final verification failed.'};Save 'MIGRATION_COMPLETE';$stage='MIGRATION_COMPLETE'}
     [pscustomobject]@{Result='PASS';Stage=$stage;Postcondition='MIGRATION_COMPLETE'}
 }
 
-Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle
+Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BCompleteRunnerList,Get-Phase12BGitHubRunnerList,Test-Phase12BRunnerPackageTree,Assert-Phase12BRunnerStagingAuthority,Install-Phase12BRunnerPackageAtomically,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle

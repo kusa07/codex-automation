@@ -36,7 +36,7 @@ try{
   $online=Copy-Object $base;$online.GitHubRunnerStatus='online';Assert-Equal (Get-Phase12BMigrationSourceState $online) UNSUPPORTED_PARTIAL 'legacy runner online'
 
   $packageVersion='2.337.0';$packageSha='1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc'
-  $identity=[pscustomobject]@{RepositoryId='1338414331';RepositoryFullName='kusa07/interest-gacha';LegacyRunnerDirectory='C:\codex-runner';LegacyRunnerId='21';LegacyRunnerName='codex-automation-windows-01';ExecutionAreaId='545b497b-f7f6-4d44-90e3-544afa1bab4f';TargetRunnerDirectory='C:\codex-runners\repo-1338414331';TargetRunnerName='codex-repo-1338414331';PackageVersion=$packageVersion;PackageSha256=$packageSha}
+  $identity=[pscustomobject]@{OperationId=[guid]::NewGuid().ToString('D');RepositoryId='1338414331';RepositoryFullName='kusa07/interest-gacha';LegacyRunnerDirectory='C:\codex-runner';LegacyRunnerId='21';LegacyRunnerName='codex-automation-windows-01';ExecutionAreaId='545b497b-f7f6-4d44-90e3-544afa1bab4f';TargetRunnerDirectory='C:\codex-runners\repo-1338414331';TargetRunnerName='codex-repo-1338414331';PackageVersion=$packageVersion;PackageSha256=$packageSha}
   $runtime=Join-Path $root 'runtime'
   $written=Initialize-Phase12BMigrationIntent -RuntimeRoot $runtime -Identity $identity
   if(-not(Test-Phase12BMigrationIntent $written)){throw 'valid migration intent rejected'}
@@ -58,6 +58,50 @@ try{
   $digestFile=Join-Path $root 'digest.bin';[IO.File]::WriteAllText($digestFile,'phase12b',[Text.UTF8Encoding]::new($false));$digest=(Get-FileHash $digestFile -Algorithm SHA256).Hash.ToLowerInvariant()
   if(-not(Test-Phase12BFileSha256 -Path $digestFile -ExpectedSha256 $digest)){throw 'exact checksum rejected'}
   if(Test-Phase12BFileSha256 -Path $digestFile -ExpectedSha256 ('0'*64)){throw 'wrong checksum accepted'}
+
+  # Every runner page is authoritative; truncation and duplicate identities fail closed.
+  function New-TestRunner([int]$id){[pscustomobject]@{id=$id;name="runner-$id";status='offline';busy=$false;labels=@()}}
+  function New-RunnerPage([int]$total,[int]$first,[int]$count){[pscustomobject]@{total_count=$total;runners=@(for($i=0;$i -lt $count;$i++){New-TestRunner ($first+$i)})}}
+  Assert-Equal (Get-Phase12BCompleteRunnerList -FetchPages {@(New-RunnerPage 1 1 1)}).TotalCount 1 'single runner page'
+  Assert-Equal (Get-Phase12BCompleteRunnerList -FetchPages {@(New-RunnerPage 100 1 100)}).TotalCount 100 'exact full runner page'
+  $page101=Get-Phase12BCompleteRunnerList -FetchPages {@((New-RunnerPage 101 1 100),(New-RunnerPage 101 101 1))}
+  Assert-Equal @($page101.Runners|Where-Object{$_.id -eq 101}).Count 1 'runner on page two'
+  $pageTwoRunner=@($page101.Runners|Where-Object{$_.id -eq 101})[0];$pageTwoRunner.labels=@(@('self-hosted','Windows','X64','codex-automation')|ForEach-Object{[pscustomobject]@{name=$_}})
+  $pageTwoLocal=[pscustomobject]@{agentId=101;agentName='runner-101';gitHubUrl='https://github.com/example/paged'}
+  $pageTwoMatch=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $pageTwoLocal -CallerRepository 'example/paged' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $page101.Runners -ExpectedLabels @('self-hosted','Windows','X64','codex-automation')
+  Assert-Equal $pageTwoMatch.GitHubRunnerCount 1 'legacy runner retained on page two';if(-not $pageTwoMatch.GitHubRunnerExact){throw 'page two legacy registration was not exact'}
+  $page201=Get-Phase12BCompleteRunnerList -FetchPages {@((New-RunnerPage 201 1 100),(New-RunnerPage 201 101 100),(New-RunnerPage 201 201 1))}
+  Assert-Equal @($page201.Runners|Where-Object{$_.id -eq 201}).Count 1 'runner on page three'
+  Assert-Throws {Get-Phase12BCompleteRunnerList -FetchPages {throw 'page read failed'}} 'runner page read failure'
+  Assert-Throws {Get-Phase12BCompleteRunnerList -FetchPages {@(New-RunnerPage 101 1 100)}} 'truncated runner pagination'
+  Assert-Throws {Get-Phase12BCompleteRunnerList -FetchPages {@(New-RunnerPage 10001 1 100)}} 'runner pagination safety limit'
+  $duplicateSecond=New-RunnerPage 101 1 1
+  Assert-Throws {Get-Phase12BCompleteRunnerList -FetchPages {@((New-RunnerPage 101 1 100),$duplicateSecond)}} 'duplicate runner ID across pages'
+
+  # Package extraction is isolated beneath operation-owned staging and atomically published.
+  function New-PackageTree([string]$path,[switch]$Incomplete){New-Item -ItemType Directory -Path (Join-Path $path 'bin') -Force|Out-Null;foreach($file in @('config.cmd','run.cmd','bin\Runner.Listener.exe')){New-Item -ItemType File -Path (Join-Path $path $file) -Force|Out-Null};if(-not $Incomplete){New-Item -ItemType File -Path (Join-Path $path 'bin\RunnerService.exe') -Force|Out-Null}}
+  $packageSource=Join-Path $root 'package-source';New-PackageTree $packageSource
+  $packageArchive=Join-Path $root 'runner.zip';Compress-Archive -Path (Join-Path $packageSource '*') -DestinationPath $packageArchive
+  $atomicRoot=Join-Path $root 'atomic-runners';New-Item -ItemType Directory -Path $atomicRoot|Out-Null
+  $partialOperation=[guid]::NewGuid().ToString('D');$partialTarget=Join-Path $atomicRoot 'repo-1';$partialStage=Join-Path $atomicRoot ".migration-staging\$partialOperation\runner";New-Item -ItemType Directory -Path $partialStage -Force|Out-Null;New-Item -ItemType File -Path (Join-Path $partialStage 'partial.tmp')|Out-Null
+  Assert-Equal (Install-Phase12BRunnerPackageAtomically -RunnerRoot $atomicRoot -TargetRunnerDirectory $partialTarget -OperationId $partialOperation -PackagePath $packageArchive).State PUBLISHED 'partial staging rebuild and publish'
+  if(-not(Test-Phase12BRunnerPackageTree $partialTarget)){throw 'published package tree is not exact'}
+  Assert-Equal (Install-Phase12BRunnerPackageAtomically -RunnerRoot $atomicRoot -TargetRunnerDirectory $partialTarget -OperationId $partialOperation -PackagePath $packageArchive).State ALREADY_PUBLISHED 'post-publish crash resume'
+  $completeOperation=[guid]::NewGuid().ToString('D');$completeRoot=Join-Path $root 'complete-runners';New-Item -ItemType Directory -Path $completeRoot|Out-Null;$completeStage=Join-Path $completeRoot ".migration-staging\$completeOperation\runner";New-PackageTree $completeStage
+  Assert-Equal (Install-Phase12BRunnerPackageAtomically -RunnerRoot $completeRoot -TargetRunnerDirectory (Join-Path $completeRoot 'repo-2') -OperationId $completeOperation -PackagePath $packageArchive).State PUBLISHED 'complete staging publish resume'
+  $badFinalRoot=Join-Path $root 'bad-final-runners';New-Item -ItemType Directory -Path (Join-Path $badFinalRoot 'repo-3') -Force|Out-Null;New-Item -ItemType File -Path (Join-Path $badFinalRoot 'repo-3\partial.tmp')|Out-Null
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $badFinalRoot -TargetRunnerDirectory (Join-Path $badFinalRoot 'repo-3') -OperationId ([guid]::NewGuid().ToString('D')) -PackagePath $packageArchive} 'partial final runner root'
+  $unknownRoot=Join-Path $root 'unknown-staging-runners';New-Item -ItemType Directory -Path (Join-Path $unknownRoot '.migration-staging\unknown-operation') -Force|Out-Null
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $unknownRoot -TargetRunnerDirectory (Join-Path $unknownRoot 'repo-4') -OperationId ([guid]::NewGuid().ToString('D')) -PackagePath $packageArchive} 'unknown staging authority'
+  $incompleteSource=Join-Path $root 'incomplete-source';New-PackageTree $incompleteSource -Incomplete;$incompleteArchive=Join-Path $root 'incomplete.zip';Compress-Archive -Path (Join-Path $incompleteSource '*') -DestinationPath $incompleteArchive;$incompleteRoot=Join-Path $root 'incomplete-runners';New-Item -ItemType Directory -Path $incompleteRoot|Out-Null
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $incompleteRoot -TargetRunnerDirectory (Join-Path $incompleteRoot 'repo-5') -OperationId ([guid]::NewGuid().ToString('D')) -PackagePath $incompleteArchive} 'missing required runner package file'
+  $reparseTarget=Join-Path $root 'reparse-target';New-Item -ItemType Directory -Path $reparseTarget|Out-Null;$reparseRoot=Join-Path $root 'reparse-runners';New-Item -ItemType Directory -Path $reparseRoot|Out-Null;$reparseOperation=[guid]::NewGuid().ToString('D');$reparseLink=Join-Path $reparseRoot ".migration-staging\$reparseOperation\runner";New-Item -ItemType Directory -Path (Split-Path -Parent $reparseLink) -Force|Out-Null
+  $reparseCreated=$false;try{New-Item -ItemType Junction -Path $reparseLink -Target $reparseTarget -ErrorAction Stop|Out-Null;$reparseCreated=$true}catch{Write-Host 'runner staging reparse negative path unavailable on this host'}
+  if($reparseCreated){
+    Assert-Throws {Assert-Phase12BRunnerStagingAuthority -RunnerRoot $reparseRoot -OperationId $reparseOperation} 'reparse runner staging'
+    $reparseFinalRoot=Join-Path $root 'reparse-final-runners';New-Item -ItemType Directory -Path $reparseFinalRoot|Out-Null;$reparseFinal=Join-Path $reparseFinalRoot 'repo-6';New-Item -ItemType Junction -Path $reparseFinal -Target $packageSource|Out-Null
+    Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $reparseFinalRoot -TargetRunnerDirectory $reparseFinal -OperationId ([guid]::NewGuid().ToString('D')) -PackagePath $packageArchive} 'reparse final runner root'
+  }
 
   # Runner ID/name are discovered from local metadata and must exactly match GitHub actual state.
   $otherLocal=[pscustomobject]@{agentId=77;agentName='another-runner';gitHubUrl='https://github.com/example/other-repo'}
@@ -84,7 +128,7 @@ try{
     Assert-Equal $match.IdentityConflict $case.Conflict "$($case.Name) conflict"
     Assert-Equal $match.UnknownState $case.Unknown "$($case.Name) unknown"
   }
-  $genericGuid=[guid]::NewGuid().ToString();$genericIdentity=[pscustomobject]@{RepositoryId='999999999';RepositoryFullName='example/other-repo';LegacyRunnerDirectory='D:\legacy-runner';LegacyRunnerId='77';LegacyRunnerName='another-runner';ExecutionAreaId=$genericGuid;TargetRunnerDirectory='D:\runners\repo-999999999';TargetRunnerName='codex-repo-999999999';PackageVersion=$packageVersion;PackageSha256=$packageSha}
+  $genericGuid=[guid]::NewGuid().ToString();$genericIdentity=[pscustomobject]@{OperationId=[guid]::NewGuid().ToString('D');RepositoryId='999999999';RepositoryFullName='example/other-repo';LegacyRunnerDirectory='D:\legacy-runner';LegacyRunnerId='77';LegacyRunnerName='another-runner';ExecutionAreaId=$genericGuid;TargetRunnerDirectory='D:\runners\repo-999999999';TargetRunnerName='codex-repo-999999999';PackageVersion=$packageVersion;PackageSha256=$packageSha}
   $genericRuntime=Join-Path $root 'generic-runtime';$genericIntent=Initialize-Phase12BMigrationIntent -RuntimeRoot $genericRuntime -Identity $genericIdentity
   Assert-Equal $genericIntent.execution_area_id $genericGuid 'generic execution area ID freeze';Assert-Equal $genericIntent.repository_id 999999999 'generic repository ID freeze';Assert-Equal $genericIntent.legacy_runner_name another-runner 'generic runner name freeze'
 
@@ -98,16 +142,25 @@ try{
   foreach($action in @('FenceDispatch','WaitForQuiescence','PrepareTargetHost','UnregisterLegacy','RegisterTarget','InstallService','StartService','WriteActiveMetadata','RestoreDispatch')){if($actions -notcontains $action){throw "migration action missing: $action"}}
 
   # Every durable stage must resume through the same production decision function.
-  $allStages=@('LEGACY_VERIFIED','DISPATCH_FENCED','QUIESCENT','TARGET_HOST_PREPARED','LEGACY_RUNNER_UNREGISTERING','LEGACY_RUNNER_UNREGISTERED','TARGET_RUNNER_REGISTERING','TARGET_RUNNER_REGISTERED','SERVICE_INSTALLING','SERVICE_INSTALLED','SERVICE_RUNNING','ACTIVE_VERIFIED','MIGRATION_COMPLETE')
+  $allStages=@('LEGACY_VERIFIED','DISPATCH_FENCED','QUIESCENT','TARGET_HOST_PREPARED','LEGACY_RUNNER_UNREGISTERING','LEGACY_RUNNER_UNREGISTERED','TARGET_RUNNER_REGISTERING','TARGET_RUNNER_REGISTERED','SERVICE_INSTALLING','SERVICE_INSTALLED','SERVICE_RUNNING','ACTIVE_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','MIGRATION_COMPLETE')
   foreach($start in $allStages){
-    $state.DispatchFenced=$start -notin @('LEGACY_VERIFIED','MIGRATION_COMPLETE');$state.Quiescent=$true;$state.TargetHostPrepared=$start -notin @('LEGACY_VERIFIED','DISPATCH_FENCED','QUIESCENT');$state.PackageVerified=$state.TargetHostPrepared;$state.AclExact=$state.TargetHostPrepared
+    $state.DispatchFenced=$start -notin @('LEGACY_VERIFIED','DISPATCH_RESTORED','MIGRATION_COMPLETE');$state.Quiescent=$true;$state.TargetHostPrepared=$start -notin @('LEGACY_VERIFIED','DISPATCH_FENCED','QUIESCENT');$state.PackageVerified=$state.TargetHostPrepared;$state.AclExact=$state.TargetHostPrepared
     $state.LegacyRegistered=$start -in @('LEGACY_VERIFIED','DISPATCH_FENCED','QUIESCENT','TARGET_HOST_PREPARED','LEGACY_RUNNER_UNREGISTERING')
-    $state.TargetRegistered=$start -in @('TARGET_RUNNER_REGISTERED','SERVICE_INSTALLING','SERVICE_INSTALLED','SERVICE_RUNNING','ACTIVE_VERIFIED','MIGRATION_COMPLETE')
-    $state.ServiceInstalled=$start -in @('SERVICE_INSTALLED','SERVICE_RUNNING','ACTIVE_VERIFIED','MIGRATION_COMPLETE');$state.ServiceRunning=$start -in @('SERVICE_RUNNING','ACTIVE_VERIFIED','MIGRATION_COMPLETE');$state.ServiceExact=$state.ServiceInstalled;$state.ActiveExact=$start -in @('ACTIVE_VERIFIED','MIGRATION_COMPLETE')
-    if($start -eq 'MIGRATION_COMPLETE'){$state.DispatchFenced=$false}
+    $state.TargetRegistered=$start -in @('TARGET_RUNNER_REGISTERED','SERVICE_INSTALLING','SERVICE_INSTALLED','SERVICE_RUNNING','ACTIVE_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','MIGRATION_COMPLETE')
+    $state.ServiceInstalled=$start -in @('SERVICE_INSTALLED','SERVICE_RUNNING','ACTIVE_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','MIGRATION_COMPLETE');$state.ServiceRunning=$start -in @('SERVICE_RUNNING','ACTIVE_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','MIGRATION_COMPLETE');$state.ServiceExact=$state.ServiceInstalled;$state.ActiveExact=$start -in @('ACTIVE_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','MIGRATION_COMPLETE')
     $resume=Invoke-Phase12BMigrationLifecycle -Identity $identity -InitialStage $start -ReadState $readState -Mutate $mutate -Persist $persist
     Assert-Equal $resume.Stage MIGRATION_COMPLETE "resume $start"
   }
+  # Backward-compatible old crash window: dispatch restored before MIGRATION_COMPLETE persistence.
+  $state.LegacyRegistered=$false;$state.TargetRegistered=$true;$state.ServiceInstalled=$true;$state.ServiceRunning=$true;$state.ServiceExact=$true;$state.ActiveExact=$true;$state.DispatchFenced=$false;$state.TargetHostPrepared=$true;$state.PackageVerified=$true;$state.AclExact=$true;$state.Quiescent=$true
+  $actions.Clear();$legacyRestore=Invoke-Phase12BMigrationLifecycle -Identity $identity -InitialStage ACTIVE_VERIFIED -ReadState $readState -Mutate $mutate -Persist $persist
+  Assert-Equal $legacyRestore.Stage MIGRATION_COMPLETE 'legacy post-restore crash window';if($actions -contains 'RestoreDispatch'){throw 'already restored dispatch was mutated again'}
+  $actions.Clear();$restoringAlreadyDone=Invoke-Phase12BMigrationLifecycle -Identity $identity -InitialStage DISPATCH_RESTORING -ReadState $readState -Mutate $mutate -Persist $persist
+  Assert-Equal $restoringAlreadyDone.Stage MIGRATION_COMPLETE 'restore success before stage persistence';if($actions -contains 'RestoreDispatch'){throw 'restored DISPATCH_RESTORING state repeated mutation'}
+  $state.DispatchFenced=$true;$restoreFailureMutate={param($name)if($name -eq 'RestoreDispatch'){throw 'restore failed'}}
+  Assert-Throws {Invoke-Phase12BMigrationLifecycle -Identity $identity -InitialStage DISPATCH_RESTORING -ReadState $readState -Mutate $restoreFailureMutate -Persist $persist} 'dispatch restore failure'
+  $readbackFailureMutate={param($name)if($name -ne 'RestoreDispatch'){throw "unexpected mutation $name"}}
+  Assert-Throws {Invoke-Phase12BMigrationLifecycle -Identity $identity -InitialStage DISPATCH_RESTORING -ReadState $readState -Mutate $readbackFailureMutate -Persist $persist} 'dispatch restore read-back failure'
   Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage TARGET_RUNNER_REGISTERING -Actual ([pscustomobject]@{IdentityConflict=$false;UnknownState=$false;LegacyRegistered=$true;TargetRegistered=$true;PostconditionMatchesStage=$false;NextStagePostcondition=$false;SafeApprovedRecoveryCandidate=$false})) MANUAL_INTERVENTION_REQUIRED 'dual registration'
   Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage SERVICE_INSTALLED -Actual ([pscustomobject]@{IdentityConflict=$true;UnknownState=$false;LegacyRegistered=$false;TargetRegistered=$true;PostconditionMatchesStage=$false;NextStagePostcondition=$false;SafeApprovedRecoveryCandidate=$false})) MANUAL_INTERVENTION_REQUIRED 'execution area identity change conflict'
   Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage SERVICE_INSTALLED -Actual ([pscustomobject]@{IdentityConflict=$false;UnknownState=$false;LegacyRegistered=$false;TargetRegistered=$true;PostconditionMatchesStage=$false;NextStagePostcondition=$true;SafeApprovedRecoveryCandidate=$false})) RESUME_SAFE 'post-mutation crash window'
@@ -170,7 +223,8 @@ if "%q%"==".package.sha256" echo 1150692afa94e71f872017e254ea55b6eece1eece3fe7e3
   foreach($action in @('FenceDispatch','PrepareTargetHost','UnregisterLegacy','RegisterTarget','InstallService','StartService','WriteActiveMetadata','RestoreDispatch')){if(@($entryState.mutation_calls) -notcontains $action){throw "entry point provider action missing: $action"}}
 
   # Resume always revalidates intent, caller desired state, and GitHub actual repository identity before mutation.
-  $entryIdentity=[pscustomobject]@{RepositoryId='1338414331';RepositoryFullName='kusa07/interest-gacha';LegacyRunnerDirectory='C:\codex-runner';LegacyRunnerId='21';LegacyRunnerName='codex-automation-windows-01';ExecutionAreaId='545b497b-f7f6-4d44-90e3-544afa1bab4f';TargetRunnerDirectory=(Join-Path $runnerRoot 'repo-1338414331');TargetRunnerName='codex-repo-1338414331';PackageVersion=$packageVersion;PackageSha256=$packageSha}
+  $entryIntent=Read-Phase12BMigrationIntent $entryRuntime
+  $entryIdentity=[pscustomobject]@{OperationId=[string]$entryIntent.operation_id;RepositoryId='1338414331';RepositoryFullName='kusa07/interest-gacha';LegacyRunnerDirectory='C:\codex-runner';LegacyRunnerId='21';LegacyRunnerName='codex-automation-windows-01';ExecutionAreaId='545b497b-f7f6-4d44-90e3-544afa1bab4f';TargetRunnerDirectory=(Join-Path $runnerRoot 'repo-1338414331');TargetRunnerName='codex-repo-1338414331';PackageVersion=$packageVersion;PackageSha256=$packageSha}
   function Assert-EntryIdentityGuard([string]$guardStage,[bool]$legacyRegistered,[bool]$targetRegistered,[string]$actualId,[string]$actualName,[bool]$readError,[string]$label){
     Write-Phase12BMigrationIntent -RuntimeRoot $entryRuntime -Stage $guardStage -Identity $entryIdentity|Out-Null
     $guard=Copy-Object $entryState

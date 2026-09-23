@@ -894,6 +894,12 @@ source runner directoryと`_work`は削除せず、非authoritativeなretired
 evidenceとして残す。source pathやcallerは`host_id`から決定論的に解決する
 `migrations/<host_id>.yaml`だけをauthorityとし、任意CLI pathは受理しない。
 
+GitHub runner一覧は全pageを取得し、`total_count`と取得件数、runner IDの
+一意性を照合する。packageはmigration intentの`operation_id`に紐づく
+runner root配下stagingへ展開・検証し、同一volumeのdirectory renameでのみ
+final rootへ公開する。dispatch restoreもdurable stageとして扱い、restore後・
+complete永続化前のcrashを安全にresumeする。
+
 自動migrationよりも「古ければ止まる」を初期方針とする。
 
 ---

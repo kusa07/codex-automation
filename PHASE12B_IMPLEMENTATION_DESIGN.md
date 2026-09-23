@@ -133,12 +133,22 @@ its actual `execution_area_id` are frozen into the migration intent and
 preserved, while the configured source runner directory and `_work` remain
 retained as non-authoritative evidence.
 
+Runner registration read-back is complete only after every GitHub API page is
+validated against one stable `total_count`, with duplicate IDs and truncation
+rejected. Final dispatch restoration is itself durable through
+`DISPATCH_RESTORING` and `DISPATCH_RESTORED`, including the older
+`ACTIVE_VERIFIED`/already-restored crash window.
+
 The private migration desired state pins an exact semantic runner version and
 lowercase SHA-256. Public code deterministically constructs the official
 `actions/runner` release asset name and URL, requires the GitHub release asset
 digest to match the configured SHA-256, and verifies the downloaded file hash
 before extraction. Arbitrary URLs, latest-version lookup, and fallback package
 authority are not permitted.
+Extraction uses intent `operation_id` staging beneath the canonical runner root.
+Only a complete, non-reparse package tree is atomically renamed to the final
+repository runner directory. Current-operation partial staging may be rebuilt;
+unknown staging and partial final roots require operator review.
 
 Explicit TestMode replaces only external state and mutation providers. Caller
 lifecycle scripts still invoke `caller-runner.ps1` and the same classification,

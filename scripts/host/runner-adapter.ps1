@@ -2,14 +2,21 @@
 param(
     [Parameter(Mandatory=$true)][ValidateSet('InstallPackage','Register','InstallService','StartService','StopService','Unregister','RemoveService','MigrateRunner','Verify')][string]$Action,
     [string]$Repository,[string]$RepositoryId,[Parameter(Mandatory=$true)][string]$RunnerRoot,[string]$ServiceName,
-    [string]$ServiceIdentity='NT AUTHORITY\NETWORK SERVICE',[string]$RunnerPackagePath
+    [string]$ServiceIdentity='NT AUTHORITY\NETWORK SERVICE',[string]$RunnerPackagePath,
+    [string]$HostRunnerRoot,[string]$OperationId
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'phase12b-host.psm1') -Force
 if($Repository -and $Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'){throw 'Invalid repository identity.'}
 if($RepositoryId -and $RepositoryId -notmatch '^[1-9][0-9]*$'){throw 'Invalid repository ID.'}
-if(-not(Test-Path -LiteralPath $RunnerRoot -PathType Container)){throw 'Runner root is missing.'}
-$root=Get-Item -LiteralPath $RunnerRoot -Force;if(($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Runner root must not be a reparse point.'}
+if($Action -eq 'InstallPackage'){
+    if([string]::IsNullOrWhiteSpace($HostRunnerRoot) -or -not(Test-Path -LiteralPath $HostRunnerRoot -PathType Container)){throw 'Canonical host runner root is missing.'}
+    if(Test-Path -LiteralPath $RunnerRoot){$root=Get-Item -LiteralPath $RunnerRoot -Force;if(-not $root.PSIsContainer -or ($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Target runner root must not be a reparse point.'}}
+}else{
+    if(-not(Test-Path -LiteralPath $RunnerRoot -PathType Container)){throw 'Runner root is missing.'}
+    $root=Get-Item -LiteralPath $RunnerRoot -Force;if(($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Runner root must not be a reparse point.'}
+}
 if($ServiceIdentity -notin @('NT AUTHORITY\NETWORK SERVICE','NT AUTHORITY\NetworkService')){throw 'Runner service identity is not approved.'}
 $config=Join-Path $RunnerRoot 'config.cmd';$run=Join-Path $RunnerRoot 'run.cmd';$serviceFile=Join-Path $RunnerRoot '.service'
 function Get-OfficialServiceName {
@@ -33,9 +40,7 @@ switch($Action){
     $package=$RunnerPackagePath
     if([string]::IsNullOrWhiteSpace($package) -or -not(Test-Path -LiteralPath $package -PathType Leaf)){throw 'Runner package availability is not grounded by host desired state.'}
     $p=Get-Item -LiteralPath $package -Force;if(($p.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Runner package must not be a reparse point.'}
-    if(@(Get-ChildItem -LiteralPath $RunnerRoot -Force).Count -ne 0){throw 'Runner package target must be an empty, newly prepared runner root.'}
-    Expand-Archive -LiteralPath $package -DestinationPath $RunnerRoot -ErrorAction Stop
-    if(-not(Test-Path -LiteralPath $config -PathType Leaf) -or -not(Test-Path -LiteralPath $run -PathType Leaf)){throw 'Installed runner package lacks config.cmd or run.cmd.'}
+    Install-Phase12BRunnerPackageAtomically -RunnerRoot $HostRunnerRoot -TargetRunnerDirectory $RunnerRoot -OperationId $OperationId -PackagePath $package -ApplyAcl {param($path)Invoke-Phase12BAction -Name ApplyAcl -Argument $path}|Out-Null
  }
  'Register' {
     if(-not(Test-Path -LiteralPath $config -PathType Leaf)){throw 'Runner config.cmd is missing after package installation.'}

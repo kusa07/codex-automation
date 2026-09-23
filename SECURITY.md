@@ -102,6 +102,12 @@ before extraction. Migration does not delete the
 legacy directory, change the workflow pin, weaken ACLs, use a personal SID,
 or accept an arbitrary adapter/provider.
 
+Runner API pagination is authority only when all pages agree on `total_count`,
+the fetched count is exact, and runner IDs are unique. Package extraction never
+writes directly into the final runner directory: operation-owned, ACL-controlled
+staging is validated and atomically published. Unknown staging or an unexpected
+partial final directory is not deleted or adopted.
+
 A self-hosted machine is a persistent security boundary. State may survive after a job even when cleanup was expected to run.
 
 Therefore Self-hosted Execution must use:
