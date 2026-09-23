@@ -12,7 +12,7 @@ $cfg=Read-Phase12BConfig $PrivateConfig;$h=$cfg.Host
 $hostState=Get-Phase12BHostState -RuntimeRoot $h.runtime_root -ExecutionRoot $h.execution_root -HostId $h.host_id -ProfileRoot $h.profile_root -RunnerRoot $h.runner_root
 if($hostState -eq 'EXISTING'){
     @('HOST_MIGRATION_PLAN','HOST_STATE=EXISTING','MIGRATION_SOURCE_STATE=CURRENT_MANAGED','MUTATIONS=NONE',("RESULT={0}" -f $(if($Approve){'VERIFY'}else{'PLAN'}))) -join "`n"
-    if($Approve){foreach($managedCaller in $cfg.Callers){$verified=Invoke-Phase12BCallerRunner -Action Onboard -HostConfig $cfg.HostFile -RepositoryFullName $managedCaller.Repository -RepositoryId $managedCaller.RepositoryId -TestMode:$TestMode -FixtureRoot $FixtureRoot;if($verified.LifecycleAfter -ne 'ACTIVE'){throw 'Current managed caller migration failed.'}}}
+    if($Approve){foreach($managedCaller in $cfg.Callers){$verified=Invoke-Phase12BCallerRunner -Action Verify -HostConfig $cfg.HostFile -RepositoryFullName $managedCaller.Repository -RepositoryId $managedCaller.RepositoryId -TestMode:$TestMode -FixtureRoot $FixtureRoot;if($verified.LifecycleAfter -ne 'ACTIVE'){throw 'Current managed caller verification failed.'}}}
     exit 0
 }
 $migration=$cfg.Migration
@@ -52,7 +52,15 @@ function Get-CompleteGitHubRunners {
     Get-Phase12BGitHubRunnerList -Repository $caller.Repository
 }
 function Get-LegacySourceObservation {
-    if($TestMode){return Read-TestMigrationState}
+    if($TestMode){
+        $state=Read-TestMigrationState
+        $actualId=if($state.PSObject.Properties['github_actual_repository_id']){[string]$state.github_actual_repository_id}else{''}
+        $actualName=if($state.PSObject.Properties['github_actual_repository_full_name']){[string]$state.github_actual_repository_full_name}else{''}
+        $identityExact=$actualId -match '^[1-9][0-9]*$' -and $actualId -ceq [string]$caller.RepositoryId -and $actualName -ceq [string]$caller.Repository
+        $state|Add-Member -NotePropertyName RepositoryMismatch -NotePropertyValue ([bool]$state.RepositoryMismatch -or -not $identityExact) -Force
+        $state|Add-Member -NotePropertyName IdentityConflict -NotePropertyValue ([bool]$state.IdentityConflict -or -not $identityExact) -Force
+        return $state
+    }
     $executionInspect=$false;$executionPreflight=$false
     try{& (Join-Path $PSScriptRoot '..\self-hosted\managed-execution-area.ps1') -Action inspect -Root $h.execution_root|Out-Null;$executionInspect=$true}catch{}
     try{& (Join-Path $PSScriptRoot '..\self-hosted\managed-execution-area.ps1') -Action preflight -Root $h.execution_root|Out-Null;$executionPreflight=$true}catch{}
@@ -67,7 +75,8 @@ function Get-LegacySourceObservation {
     $actualRepository=$repoRaw|ConvertFrom-Json -ErrorAction Stop
     $runnerResponse=Get-CompleteGitHubRunners
     $gh=@($runnerResponse.Runners)
-    $identityMatch=if($runner){Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $runner -CallerRepository $caller.Repository -CallerRepositoryId $caller.RepositoryId -ActualRepositoryId ([string]$actualRepository.id) -GitHubRunners $gh -ExpectedLabels $h.labels}else{$null}
+    if(-not $actualRepository.PSObject.Properties['id'] -or -not $actualRepository.PSObject.Properties['full_name']){throw 'GitHub repository metadata is incomplete.'}
+    $identityMatch=if($runner){Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $runner -CallerRepository $caller.Repository -CallerRepositoryId $caller.RepositoryId -ActualRepositoryId ([string]$actualRepository.id) -ActualRepositoryFullName ([string]$actualRepository.full_name) -GitHubRunners $gh -ExpectedLabels $h.labels}else{$null}
     $services=@(Get-CimInstance Win32_Service -ErrorAction Stop|Where-Object{[string]$_.PathName -like "*$LegacyRunnerDirectory*"})
     $runnerProcesses=@(Get-CimInstance Win32_Process -ErrorAction Stop|Where-Object{[string]$_.ExecutablePath -like "$LegacyRunnerDirectory*"})
     $codexProcesses=@(Get-CimInstance Win32_Process -ErrorAction Stop|Where-Object{[string]$_.ExecutablePath -like "$($h.execution_root)*" -or [string]$_.CommandLine -like "*$($h.execution_root)*"})
@@ -116,6 +125,8 @@ function Get-ActualMigrationState {
     if($TestMode){
         $state=Read-TestMigrationState
         $repositoryIdentity=Get-MigrationRepositoryIdentityState $state
+        $dispatchKnown=$state.PSObject.Properties['workflow_dispatch_state'] -and [string]$state.workflow_dispatch_state -in @('active','disabled_manually')
+        $state|Add-Member -NotePropertyName DispatchStateKnown -NotePropertyValue ([bool]$dispatchKnown) -Force
         $state|Add-Member -NotePropertyName IdentityConflict -NotePropertyValue ([bool]$state.IdentityConflict -or [bool]$repositoryIdentity.IdentityConflict) -Force
         $state|Add-Member -NotePropertyName UnknownState -NotePropertyValue ([bool]$state.UnknownState -or [bool]$repositoryIdentity.UnknownState) -Force
         $state|Add-Member -NotePropertyName ActualRepositoryId -NotePropertyValue ([string]$repositoryIdentity.ActualRepositoryId) -Force
@@ -144,7 +155,7 @@ function Get-ActualMigrationState {
     $serviceRunning=$serviceExact -and [string]$service.State -eq 'Running'
     $activeExact=$metadata -and [string]$metadata.lifecycle_state -eq 'ACTIVE' -and $targetOnline -and $serviceRunning -and (Get-Phase12BHostState -RuntimeRoot $h.runtime_root -ExecutionRoot $h.execution_root -HostId $h.host_id -ProfileRoot $h.profile_root -RunnerRoot $h.runner_root) -eq 'EXISTING'
     $identityConflict=[bool]$repositoryIdentity.IdentityConflict -or $legacy.Count -gt 1 -or $canonical.Count -gt 1 -or ($legacy.Count -eq 1 -and $canonical.Count -eq 1) -or ($legacy.Count -eq 1 -and -not $legacyExact) -or ($canonical.Count -eq 1 -and -not $targetExact) -or -not $executionAreaPreserved
-    [pscustomobject]@{IdentityConflict=$identityConflict;UnknownState=[bool]$repositoryIdentity.UnknownState;ActualRepositoryId=[string]$repositoryIdentity.ActualRepositoryId;ActualRepositoryFullName=[string]$repositoryIdentity.ActualRepositoryFullName;DispatchFenced=((Get-WorkflowDispatchState) -eq 'disabled_manually');Quiescent=((Wait-Phase12BCallerQuiescence -ExecutionRoot $h.execution_root -RepositoryId $caller.RepositoryId -RepositoryFullName $caller.Repository -TimeoutSeconds 0).Result -eq 'PASS');TargetHostPrepared=[bool]$hostPrepared;PackageVerified=$packageOk;ExecutionAreaIdPreserved=$executionAreaPreserved;AclExact=$aclExact;LegacyRegistered=$legacyExact;TargetRegistered=$targetExact;ServiceInstalled=$serviceExact;ServiceRunning=$serviceRunning;ServiceExact=$serviceExact;ActiveExact=[bool]$activeExact;LegacyDirectoryRetained=(Test-Path -LiteralPath $identity.LegacyRunnerDirectory -PathType Container)}
+    [pscustomobject]@{IdentityConflict=$identityConflict;UnknownState=[bool]$repositoryIdentity.UnknownState;ActualRepositoryId=[string]$repositoryIdentity.ActualRepositoryId;ActualRepositoryFullName=[string]$repositoryIdentity.ActualRepositoryFullName;DispatchStateKnown=$true;DispatchFenced=((Get-WorkflowDispatchState) -eq 'disabled_manually');Quiescent=((Wait-Phase12BCallerQuiescence -ExecutionRoot $h.execution_root -RepositoryId $caller.RepositoryId -RepositoryFullName $caller.Repository -TimeoutSeconds 0).Result -eq 'PASS');TargetHostPrepared=[bool]$hostPrepared;PackageVerified=$packageOk;ExecutionAreaIdPreserved=$executionAreaPreserved;AclExact=$aclExact;LegacyRegistered=$legacyExact;TargetRegistered=$targetExact;ServiceInstalled=$serviceExact;ServiceRunning=$serviceRunning;ServiceExact=$serviceExact;ActiveExact=[bool]$activeExact;LegacyDirectoryRetained=(Test-Path -LiteralPath $identity.LegacyRunnerDirectory -PathType Container)}
 }
 function Assert-OfficialRunnerPackageProvenance {
     if($TestMode){return}
@@ -154,7 +165,7 @@ function Assert-OfficialRunnerPackageProvenance {
     if(-not(Test-Phase12BRunnerReleaseAsset -Contract $package -Release $release)){throw 'Official runner package provenance or asset digest verification failed.'}
 }
 function Invoke-MigrationMutation([string]$Name){
-    if($TestMode){$s=Read-TestMigrationState;$calls=@(if($s.PSObject.Properties['mutation_calls']){$s.mutation_calls});$calls+=$Name;$s|Add-Member -NotePropertyName mutation_calls -NotePropertyValue $calls -Force;switch($Name){'FenceDispatch'{$s.workflow_dispatch_state='disabled_manually';$s.DispatchFenced=$true}'WaitForQuiescence'{$s.Quiescent=$true}'PrepareTargetHost'{$s.TargetHostPrepared=$true;$s.PackageVerified=$true;$s.ExecutionAreaIdPreserved=$true;$s.AclExact=$true}'UnregisterLegacy'{$s.LegacyRegistered=$false}'RegisterTarget'{$s.TargetRegistered=$true}'InstallService'{$s.ServiceInstalled=$true;$s.ServiceExact=$true}'StartService'{$s.ServiceRunning=$true}'WriteActiveMetadata'{$s.ActiveExact=$true}'RestoreDispatch'{$s.workflow_dispatch_state='active';$s.DispatchFenced=$false}};Write-TestMigrationState $s;return}
+    if($TestMode){$s=Read-TestMigrationState;$calls=@(if($s.PSObject.Properties['mutation_calls']){$s.mutation_calls});$calls+=$Name;$s|Add-Member -NotePropertyName mutation_calls -NotePropertyValue $calls -Force;switch($Name){'FenceDispatch'{$s.workflow_dispatch_state='disabled_manually';$s.DispatchFenced=$true}'WaitForQuiescence'{if(-not($s.PSObject.Properties['quiescence_behavior']) -or [string]$s.quiescence_behavior -ne 'BUSY'){$s.Quiescent=$true}}'PrepareTargetHost'{$s.TargetHostPrepared=$true;$s.PackageVerified=$true;$s.ExecutionAreaIdPreserved=$true;$s.AclExact=$true}'UnregisterLegacy'{$s.LegacyRegistered=$false}'RegisterTarget'{$s.TargetRegistered=$true}'InstallService'{$s.ServiceInstalled=$true;$s.ServiceExact=$true}'StartService'{$s.ServiceRunning=$true}'WriteActiveMetadata'{$s.ActiveExact=$true}'RestoreDispatch'{$s.workflow_dispatch_state='active';$s.DispatchFenced=$false}};Write-TestMigrationState $s;return}
     switch($Name){
       'FenceDispatch'{& gh api --method PUT ((Get-WorkflowApiPath)+'/disable')|Out-Null;if($LASTEXITCODE -ne 0){throw 'Workflow dispatch fence failed.'}}
       'WaitForQuiescence'{$quiet=Wait-Phase12BCallerQuiescence -ExecutionRoot $h.execution_root -RepositoryId $caller.RepositoryId -RepositoryFullName $caller.Repository -TimeoutSeconds ([int]$h.quiescence_timeout_seconds);if($quiet.Result -ne 'PASS'){throw "Migration quiescence failed: $($quiet.Detail)"}}
@@ -184,12 +195,12 @@ function Invoke-MigrationMutation([string]$Name){
 Assert-OfficialRunnerPackageProvenance
 $intent=Read-Phase12BMigrationIntent -RuntimeRoot $h.runtime_root
 if($intent){
-    $identity=[pscustomobject]@{OperationId=[string]$intent.operation_id;RepositoryId=[string]$intent.repository_id;RepositoryFullName=[string]$intent.repository_full_name;LegacyRunnerDirectory=[string]$intent.legacy_runner_directory;LegacyRunnerId=[string]$intent.legacy_runner_id;LegacyRunnerName=[string]$intent.legacy_runner_name;ExecutionAreaId=[string]$intent.execution_area_id;TargetRunnerDirectory=[string]$intent.target_runner_directory;TargetRunnerName=[string]$intent.target_runner_name;PackageVersion=[string]$intent.package_version;PackageSha256=[string]$intent.package_sha256}
+    $identity=[pscustomobject]@{OperationId=[string]$intent.operation_id;RepositoryId=[string]$intent.repository_id;RepositoryFullName=[string]$intent.repository_full_name;LegacyRunnerDirectory=[string]$intent.legacy_runner_directory;LegacyRunnerId=[string]$intent.legacy_runner_id;LegacyRunnerName=[string]$intent.legacy_runner_name;ExecutionAreaId=[string]$intent.execution_area_id;TargetRunnerDirectory=[string]$intent.target_runner_directory;TargetRunnerName=[string]$intent.target_runner_name;PackageVersion=[string]$intent.package_version;PackageSha256=[string]$intent.package_sha256;DispatchInitialState=[string]$intent.dispatch_initial_state;DispatchRestoreRequired=[bool]$intent.dispatch_restore_required}
     if($identity.RepositoryId -cne [string]$caller.RepositoryId -or $identity.RepositoryFullName -cne [string]$caller.Repository -or $identity.LegacyRunnerDirectory -cne $LegacyRunnerDirectory -or $identity.TargetRunnerDirectory -cne [string]$target.RunnerDirectory -or $identity.TargetRunnerName -cne [string]$target.RunnerName -or $identity.PackageVersion -cne [string]$package.Version -or $identity.PackageSha256 -cne [string]$package.Sha256){throw 'Migration intent contradicts desired immutable identity.'}
     $sourceState='LEGACY_PHASE10_INTERACTIVE';$stage=[string]$intent.migration_stage
 } else {
     $source=Get-LegacySourceObservation;$sourceState=Get-Phase12BMigrationSourceState $source
-    $identity=[pscustomobject]@{OperationId=[guid]::NewGuid().ToString('D');RepositoryId=[string]$caller.RepositoryId;RepositoryFullName=[string]$caller.Repository;LegacyRunnerDirectory=$LegacyRunnerDirectory;LegacyRunnerId=[string]$source.legacy_runner_id;LegacyRunnerName=[string]$source.legacy_runner_name;ExecutionAreaId=[string]$source.execution_area_id;TargetRunnerDirectory=[string]$target.RunnerDirectory;TargetRunnerName=[string]$target.RunnerName;PackageVersion=[string]$package.Version;PackageSha256=[string]$package.Sha256}
+    $identity=[pscustomobject]@{OperationId=[guid]::NewGuid().ToString('D');RepositoryId=[string]$caller.RepositoryId;RepositoryFullName=[string]$caller.Repository;LegacyRunnerDirectory=$LegacyRunnerDirectory;LegacyRunnerId=[string]$source.legacy_runner_id;LegacyRunnerName=[string]$source.legacy_runner_name;ExecutionAreaId=[string]$source.execution_area_id;TargetRunnerDirectory=[string]$target.RunnerDirectory;TargetRunnerName=[string]$target.RunnerName;PackageVersion=[string]$package.Version;PackageSha256=[string]$package.Sha256;DispatchInitialState='active';DispatchRestoreRequired=$true}
     $stage='NOT_STARTED'
 }
 if($intent){$actualForPlan=Get-ActualMigrationState;$quiescence=[bool]$actualForPlan.Quiescent;$recovery=if(Test-Phase12BMigrationStageTopology -Stage $stage -Actual $actualForPlan){'RESUME_SAFE'}else{'MANUAL_INTERVENTION_REQUIRED'}}else{$quiescence=[string]$source.CurrentRunState -eq 'ABSENT' -and [string]$source.MutexState -eq 'FREE' -and [int]$source.ActiveGitHubJobCount -eq 0;$recovery=if($sourceState -eq 'LEGACY_PHASE10_INTERACTIVE'){'RETRY_SAFE'}else{'MANUAL_INTERVENTION_REQUIRED'}}
