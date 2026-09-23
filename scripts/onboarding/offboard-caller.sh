@@ -41,8 +41,8 @@ host_inspect="$(phase12b_caller_runner Inspect "$host_config" "$repo" "$repo_id"
 host_lifecycle="$(sed -n 's/^CALLER_RUNNER_LIFECYCLE_STATE_AFTER=//p' <<< "$host_inspect")"
 [[ "$host_lifecycle" =~ ^(ACTIVE|RETIRING|DISPATCH_DISABLED|SERVICE_STOPPED|RUNNER_REMOVED|RETIRED)$ ]] || { echo 'Canonical host lifecycle is not offboard-resumable.' >&2; exit 3; }
 if phase12b_test_mode; then gh_bin="$(phase12b_test_fixture_root)/bin/gh";[[ -x "$gh_bin" && ! -L "$gh_bin" ]] || { echo 'Fixed test gh fixture is missing or unsafe.' >&2; exit 3; };else gh_bin=gh;command -v "$gh_bin" >/dev/null 2>&1 || { echo 'gh is required for repository/workflow grounding.' >&2; exit 127; };fi
-actual_repo_id="$($gh_bin repo view "$repo" --json databaseId --jq '.databaseId')" || { echo 'Repository ID read-back failed.' >&2; exit 3; }
-actual_branch="$($gh_bin repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name')" || { echo 'Default branch read-back failed.' >&2; exit 3; }
+repo_metadata="$(phase12b_github_repository_metadata "$gh_bin" "$repo")" || exit $?
+IFS=$'\t' read -r actual_repo_id actual_repo_name actual_branch <<< "$repo_metadata"
 [[ "$actual_repo_id" == "$repo_id" && "$actual_branch" == "$workflow_branch" ]] || { echo 'Repository identity/default branch contradicts desired state.' >&2; exit 3; }
 workflow_state="$(phase12b_github_content_state "$gh_bin" "repos/$repo/contents/$workflow_path?ref=$workflow_branch")" || exit $?
 case "$workflow_state" in

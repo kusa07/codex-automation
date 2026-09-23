@@ -16,6 +16,21 @@ if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$tmp/diverged"
 if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$tmp/old" --target "$tmp/target" --known-old "$tmp/known-old" >/dev/null 2>&1; then echo 'production accepted arbitrary known-old file' >&2; exit 1; fi
 echo 'workflow-sync: PASS'
 
+# The legacy production wrapper is a separate canonical contract. Its exact
+# rendered bytes are accepted as managed-old; a one-byte change is diverged.
+legacy_template="$ROOT/templates/caller/phase10-connectivity-test.yml.tpl"
+current_template="$ROOT/templates/caller/codex-connectivity-test.yml.tpl"
+legacy="$tmp/legacy-rendered"; current="$tmp/current-rendered"
+sed -e 's#__AUTOMATION_REPOSITORY__#kusa07/codex-automation#g' -e 's#__AUTOMATION_WORKFLOW_PATH__#.github/workflows/codex-run.yml#g' -e 's#__AUTOMATION_WORKFLOW_SHA__#352857a387b1f855920fb8d1587091b31e518c21#g' -e 's#__GOOGLE_CLOUD_PROJECT_ID__#codex-automation-506111#g' -e 's#__WORKLOAD_IDENTITY_PROVIDER__#projects\/896979145485\/locations\/global\/workloadIdentityPools\/github\/providers\/github-actions#g' "$legacy_template" > "$legacy"
+sed -e 's#__AUTOMATION_REPOSITORY__#kusa07/codex-automation#g' -e 's#__AUTOMATION_WORKFLOW_PATH__#.github/workflows/codex-run.yml#g' -e 's#__AUTOMATION_WORKFLOW_SHA__#80a253dd29a1e6e75f71250749f649a09e3aaba6#g' -e 's#__GOOGLE_CLOUD_PROJECT_ID__#codex-automation-506111#g' -e 's#__WORKLOAD_IDENTITY_PROVIDER__#projects\/896979145485\/locations\/global\/workloadIdentityPools\/github\/providers\/github-actions#g' -e 's#__CODEX_AUTH_SECRET_ID__#codex-auth-example-project#g' "$current_template" > "$current"
+grep -q 'WORKFLOW_STATE=MANAGED_OLD' < <("$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$legacy" --target "$current" --known-old "$legacy" --test-mode --fixture-root "$tmp")
+cp "$legacy" "$tmp/legacy-diverged"; printf '\n' >> "$tmp/legacy-diverged"
+if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$tmp/legacy-diverged" --target "$current" --known-old "$legacy" --test-mode --fixture-root "$tmp" >/dev/null 2>&1; then
+  echo 'one-byte legacy wrapper divergence was accepted' >&2; exit 1
+fi
+grep -q 'WORKFLOW_STATE=EXACT_TARGET' < <("$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$current" --target "$current" --test-mode --fixture-root "$tmp")
+echo 'workflow-sync-canonical-templates: PASS'
+
 # Remote interface fixture: repository ID, managed-old classification, PUT,
 # and exact content/blob read-back are exercised without GitHub mutation.
 remote="$(mktemp -d)"; trap 'rm -rf "$tmp" "$remote"' EXIT
@@ -33,7 +48,7 @@ esac
 FAKE
 cat > "$remote/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
-if [[ "$1" == repo && "$2" == view ]]; then echo 12345; exit 0; fi
+if [[ "$1" == api && "$2" == repos/* && "$*" == *'@tsv'* ]]; then printf '12345\tkusa07/example-project\tmain\n'; exit 0; fi
 if [[ "$1" == api ]]; then
   if [[ "$*" == *'--method PUT'* ]]; then cp "$PHASE12B_MOCK_TARGET" "$PHASE12B_MOCK_REMOTE"; echo changed > "$PHASE12B_MOCK_STATE"; exit 0; fi
   if [[ "$*" == *".content"* ]]; then base64 -w0 "$PHASE12B_MOCK_REMOTE"; exit 0; fi

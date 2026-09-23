@@ -31,10 +31,10 @@ if [[ -n "$repository" ]]; then
   if phase12b_test_mode; then gh_bin="$(phase12b_test_fixture_root)/bin/gh";[[ -x "$gh_bin" && ! -L "$gh_bin" ]] || { echo 'Fixed test gh fixture is missing or unsafe.' >&2; exit 3; };else gh_bin=gh;command -v "$gh_bin" >/dev/null 2>&1 || { echo 'gh is required for authoritative repository/workflow read-back.' >&2; exit 127; };fi
   if phase12b_test_mode; then
     [[ -n "${PHASE12B_TEST_REPOSITORY_ID:-}" && -n "${PHASE12B_TEST_DEFAULT_BRANCH:-}" ]] || { echo 'Test repository read-back fixture is incomplete.' >&2; exit 3; }
-    remote_repo_id="$PHASE12B_TEST_REPOSITORY_ID"; default_branch="$PHASE12B_TEST_DEFAULT_BRANCH"
+    remote_repo_id="$PHASE12B_TEST_REPOSITORY_ID"; remote_repo_name="$repository"; default_branch="$PHASE12B_TEST_DEFAULT_BRANCH"
   else
-    remote_repo_id="$("$gh_bin" repo view "$repository" --json databaseId --jq '.databaseId')"
-    default_branch="$("$gh_bin" repo view "$repository" --json defaultBranchRef --jq '.defaultBranchRef.name')"
+    repo_metadata="$(phase12b_github_repository_metadata "$gh_bin" "$repository")" || exit $?
+    IFS=$'\t' read -r remote_repo_id remote_repo_name default_branch <<< "$repo_metadata"
   fi
   [[ "$remote_repo_id" =~ ^[1-9][0-9]*$ && "$remote_repo_id" == "$configured_repo_id" ]] || { echo 'Authoritative repository ID does not match desired state.' >&2; exit 3; }
   phase12b_require_branch "$default_branch"
@@ -66,13 +66,19 @@ if [[ -n "$repository" ]]; then
     project_id="$(phase12b_yaml_value "$environment" '.google_cloud.project_id')"; pool_id="$(phase12b_yaml_value "$environment" '.google_cloud.workload_identity_pool')"; provider_id="$(phase12b_yaml_value "$environment" '.google_cloud.workload_identity_provider')"
     command -v gcloud >/dev/null 2>&1 || { echo 'gcloud is required for managed-old authority read-back.' >&2; exit 127; }
     provider_condition="$(gcloud iam workload-identity-pools providers describe "$provider_id" --project="$project_id" --location=global --workload-identity-pool="$pool_id" --format='value(attributeCondition)' 2>/dev/null)" || { echo 'Managed-old provider authority read-back failed.' >&2; exit 3; }
+    approved_shas="$(phase12b_parse_wif_workflow_condition "$provider_condition" "$(phase12b_yaml_value "$environment" '.github.owner_id')" "$automation_repo" "$automation_path")" || { echo 'Managed-old provider condition is malformed, broadened, or mismatched.' >&2; exit 3; }
+    [[ -n "$approved_shas" ]] || { echo 'Managed-old provider condition has no approved workflow SHA.' >&2; exit 3; }
     while IFS= read -r approved_sha; do
-      [[ "$provider_condition" == *"$automation_repo/$automation_path@$approved_sha"* ]] || continue
       [[ "$approved_sha" == "$target_sha" ]] && continue
       approved_render="$(mktemp)"; cleanup+=("$approved_render")
       sed -e "s#__AUTOMATION_REPOSITORY__#$automation_repo#g" -e "s#__AUTOMATION_WORKFLOW_PATH__#$automation_path#g" -e "s#__AUTOMATION_WORKFLOW_SHA__#$approved_sha#g" -e "s#__GOOGLE_CLOUD_PROJECT_ID__#$project_id#g" -e "s#__WORKLOAD_IDENTITY_PROVIDER__#$provider_resource#g" -e "s#__CODEX_AUTH_SECRET_ID__#$secret_id#g" "$canonical_template" > "$approved_render"
       known_old+=("$approved_render")
-    done < <(grep -oE '[0-9a-f]{40}' <<< "$provider_condition" | sort -u)
+      legacy_template="$ROOT/templates/caller/phase10-connectivity-test.yml.tpl"
+      [[ -f "$legacy_template" && ! -L "$legacy_template" ]] || { echo 'Canonical Phase 10 legacy workflow template is missing or unsafe.' >&2; exit 3; }
+      legacy_render="$(mktemp)"; cleanup+=("$legacy_render")
+      sed -e "s#__AUTOMATION_REPOSITORY__#$automation_repo#g" -e "s#__AUTOMATION_WORKFLOW_PATH__#$automation_path#g" -e "s#__AUTOMATION_WORKFLOW_SHA__#$approved_sha#g" -e "s#__GOOGLE_CLOUD_PROJECT_ID__#$project_id#g" -e "s#__WORKLOAD_IDENTITY_PROVIDER__#$provider_resource#g" "$legacy_template" > "$legacy_render"
+      known_old+=("$legacy_render")
+    done <<< "$approved_shas"
   fi
   existing="$current_file"
 else

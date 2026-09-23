@@ -30,9 +30,9 @@ phase12b_validate_secret_authentication() (
   command -v codex >/dev/null 2>&1 || return 1
   CODEX_HOME="$auth_root" HOME="$auth_root" USERPROFILE="$auth_root" codex login status >/dev/null 2>&1
 )
-actual_repo_id="$("$gh_bin" repo view "$repo" --json databaseId --jq '.databaseId' 2>/dev/null || true)"
-[[ "$actual_repo_id" =~ ^[1-9][0-9]*$ && "$actual_repo_id" == "$repo_id" ]] || { echo 'Repository ID read-back did not match desired state.' >&2; exit 3; }
-default_branch="$("$gh_bin" repo view "$repo" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+repo_metadata="$(phase12b_github_repository_metadata "$gh_bin" "$repo")" || exit $?
+IFS=$'\t' read -r actual_repo_id actual_repo_name default_branch <<< "$repo_metadata"
+[[ "$actual_repo_id" == "$repo_id" ]] || { echo 'Repository ID read-back did not match desired state.' >&2; exit 3; }
 [[ "$default_branch" == "$branch" ]] || { echo 'Repository default branch does not match desired caller workflow branch.' >&2; exit 3; }
 workflow_state="$(phase12b_github_content_state "$gh_bin" "repos/$repo/contents/$(phase12b_yaml_value "$caller" '.workflow.path')?ref=$branch")" || exit $?
 secret_state="$($gcloud_bin secrets list --project="$project_id" --filter="name=$secret" --format='value(name)')" || { echo 'Unable to read Secret inventory.' >&2; exit 3; }
