@@ -1145,7 +1145,18 @@ function Read-Phase12BMigrationIntent {
     $path=Get-Phase12BMigrationIntentPath $RuntimeRoot
     if(-not(Test-Path -LiteralPath $path)){return $null}
     if(-not(Test-Path -LiteralPath $path -PathType Leaf) -or -not(Test-Phase12BNoReparse $path)){throw 'Migration intent path is unsafe.'}
-    try{$intent=Get-Content -LiteralPath $path -Raw -ErrorAction Stop|ConvertFrom-Json -DateKind String -ErrorAction Stop}catch{throw 'Migration intent is malformed.'}
+    try {
+        $raw=Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $convertFromJson=Get-Command ConvertFrom-Json -ErrorAction Stop
+        $dateKindSupported=$convertFromJson.Parameters.ContainsKey('DateKind')
+        if($dateKindSupported){$intent=$raw|ConvertFrom-Json -DateKind String -ErrorAction Stop}
+        else{$intent=$raw|ConvertFrom-Json -ErrorAction Stop}
+        # Windows PowerShell 5.1 eagerly converts ISO timestamps to DateTime.
+        # Restore the exact UTC wire value before strict contract validation so
+        # parsing remains equivalent to PowerShell 7's -DateKind String.
+        $timestampMatches=[regex]::Matches($raw,'"state_entered_at"\s*:\s*"(?<value>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00))"')
+        if($timestampMatches.Count -eq 1){$intent.state_entered_at=$timestampMatches[0].Groups['value'].Value}
+    } catch {throw 'Migration intent is malformed.'}
     if(-not(Test-Phase12BMigrationIntent $intent)){throw 'Migration intent contract is invalid.'}
     $intent
 }

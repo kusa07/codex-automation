@@ -41,6 +41,14 @@ try{
   $written=Initialize-Phase12BMigrationIntent -RuntimeRoot $runtime -Identity $identity
   if(-not(Test-Phase12BMigrationIntent $written)){throw 'valid migration intent rejected'}
   $read=Read-Phase12BMigrationIntent -RuntimeRoot $runtime;Assert-Equal $read.migration_stage LEGACY_VERIFIED 'intent round-trip'
+  if($read.state_entered_at -is [DateTime] -or $read.state_entered_at -is [DateTimeOffset]){throw 'migration intent timestamp was not preserved as a string'}
+  $intentPath=Get-Phase12BMigrationIntentPath $runtime;$validIntentRaw=Get-Content -LiteralPath $intentPath -Raw
+  $invalidTimestampRaw=[regex]::Replace($validIntentRaw,'"state_entered_at"\s*:\s*"[^"]+"','"state_entered_at":"not-a-timestamp"',1)
+  Set-Content -LiteralPath $intentPath -Value $invalidTimestampRaw -NoNewline
+  Assert-Throws {Read-Phase12BMigrationIntent -RuntimeRoot $runtime} 'invalid intent timestamp'
+  Set-Content -LiteralPath $intentPath -Value '{malformed' -NoNewline
+  Assert-Throws {Read-Phase12BMigrationIntent -RuntimeRoot $runtime} 'malformed intent JSON'
+  Set-Content -LiteralPath $intentPath -Value $validIntentRaw -NoNewline
   Assert-Throws {Initialize-Phase12BMigrationIntent -RuntimeRoot $runtime -Identity $identity} 'duplicate initial intent'
   Write-Phase12BMigrationIntent -RuntimeRoot $runtime -Stage DISPATCH_FENCED -Identity $identity|Out-Null
   Assert-Equal (Read-Phase12BMigrationIntent $runtime).migration_stage DISPATCH_FENCED 'atomic intent update'
