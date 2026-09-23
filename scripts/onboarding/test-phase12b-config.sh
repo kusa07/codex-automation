@@ -13,6 +13,62 @@ fixture_cli=true
 run_phase12b() { local script="$1"; shift; if [[ "$fixture_cli" == true ]]; then ( source "$script" "$@" --test-mode --fixture-root "$tmp" ); else ( source "$script" "$@" ); fi; }
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+# The production helper must be the only repository identity path. Exercise
+# its fail-closed contract independently of the broader lifecycle fixture.
+cat > "$tmp/gh-metadata" <<'FAKE'
+#!/usr/bin/env bash
+case "${PHASE12B_METADATA_CASE:-valid}" in
+  valid) printf '12345\tkusa07/example-project\tmain\n' ;;
+  read-failure) exit 41 ;;
+  empty) : ;;
+  malformed) printf '12345\tkusa07/example-project\tmain\nextra\n' ;;
+  missing-id) printf '\tkusa07/example-project\tmain\n' ;;
+  nonnumeric-id) printf 'not-a-number\tkusa07/example-project\tmain\n' ;;
+  full-name-mismatch) printf '12345\tkusa07/other-project\tmain\n' ;;
+  missing-branch) printf '12345\tkusa07/example-project\t\n' ;;
+  invalid-branch) printf '12345\tkusa07/example-project\tbad..branch\n' ;;
+  extra-field) printf '12345\tkusa07/example-project\tmain\textra\n' ;;
+  multiline) printf '12345\tkusa07/example-project\tmain\nsecond-line\n' ;;
+  *) exit 42 ;;
+esac
+FAKE
+chmod +x "$tmp/gh-metadata"
+metadata_expect_valid() {
+  local case_name="$1"
+  PHASE12B_METADATA_CASE="$case_name" phase12b_github_repository_metadata "$tmp/gh-metadata" kusa07/example-project >/dev/null || {
+    echo "valid repository metadata was rejected: $case_name" >&2; exit 1;
+  }
+}
+metadata_expect_invalid() {
+  local case_name="$1"
+  if PHASE12B_METADATA_CASE="$case_name" phase12b_github_repository_metadata "$tmp/gh-metadata" kusa07/example-project >/dev/null 2>&1; then
+    echo "invalid repository metadata was accepted: $case_name" >&2; exit 1
+  fi
+}
+metadata_expect_valid valid
+for metadata_case in read-failure empty malformed missing-id nonnumeric-id full-name-mismatch missing-branch invalid-branch extra-field multiline; do
+  metadata_expect_invalid "$metadata_case"
+done
+echo 'repository-metadata-negative-matrix: PASS'
+
+wif_owner='32902649'; wif_repo='kusa07/codex-automation'; wif_path='.github/workflows/codex-run.yml'
+wif_old='352857a387b1f855920fb8d1587091b31e518c21'; wif_new='374e48e8508e25e822dcd0673ca5cbb799e7d289'
+wif_condition="assertion.repository_owner_id == '$wif_owner' && assertion.job_workflow_ref.startsWith('$wif_repo/$wif_path@') && assertion.job_workflow_sha in ['$wif_old', '$wif_new']"
+mapfile -t wif_parsed < <(phase12b_parse_wif_workflow_condition "$wif_condition" "$wif_owner" "$wif_repo" "$wif_path")
+[[ "${wif_parsed[*]}" == "$wif_old $wif_new" ]] || { echo 'valid WIF condition was not parsed exactly.' >&2; exit 1; }
+for wif_invalid in \
+  "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/other.yml@') && assertion.job_workflow_sha in ['$wif_old']" \
+  "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['$wif_old', '$wif_old']" \
+  "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['not-a-sha']" \
+  "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@')" \
+  "assertion.repository_owner_id == '32902649' || assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['$wif_old']"; do
+  if phase12b_parse_wif_workflow_condition "$wif_invalid" "$wif_owner" "$wif_repo" "$wif_path" >/dev/null 2>&1; then
+    echo 'invalid WIF condition was accepted.' >&2; exit 1
+  fi
+done
+echo 'wif-condition-parser-negative-matrix: PASS'
+
 mkdir -p "$tmp/bin" "$tmp/callers" "$tmp/retired-callers"
 caller="$tmp/callers/example-project.yaml"; retired="$tmp/retired-callers/example-project.yaml"
 touch "$tmp/environment.yaml" "$caller" "$tmp/host.yaml"
@@ -58,10 +114,7 @@ esac
 FAKE
 cat > "$tmp/bin/gh" <<'FAKE'
 #!/usr/bin/env bash
-if [[ "$1" == repo && "$2" == view ]]; then
-  [[ "$*" == *defaultBranchRef* ]] && echo main || echo 12345
-  exit 0
-fi
+if [[ "$1" == api && "$2" == repos/* && "$*" == *'@tsv'* ]]; then printf '12345\tkusa07/example-project\tmain\n'; exit 0; fi
 if [[ "$1" == api ]]; then
   state="$(cat "${PHASE12B_WORKFLOW_STATE:?}")"
   if [[ "$*" == *'--include'* ]]; then [[ "$state" == absent ]] && { printf 'HTTP/1.1 404 Not Found\r\n\r\n'; exit 1; } || printf 'HTTP/1.1 200 OK\r\n\r\n';
@@ -189,7 +242,7 @@ yq() {
   esac
 }
 gh() {
-  if [[ "$1" == repo && "$2" == view ]]; then [[ "$*" == *defaultBranchRef* ]] && echo main || echo 12345; return 0; fi
+  if [[ "$1" == api && "$2" == repos/* && "$*" == *'@tsv'* ]]; then printf '12345\tkusa07/example-project\tmain\n'; return 0; fi
   if [[ "$1" == api ]]; then [[ "$*" == *'--include'* ]] && printf 'HTTP/1.1 200 OK\r\n\r\n' || printf '0123456789012345678901234567890123456789\n'; fi
 }
 gcloud() {

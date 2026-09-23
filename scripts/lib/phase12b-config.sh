@@ -51,6 +51,41 @@ phase12b_github_content_state() {
     *) echo 'GitHub content read-back failed; only an explicit 404 proves absence.' >&2; return 3 ;;
   esac
 }
+phase12b_github_repository_metadata() {
+  local gh_bin="$1" repository="$2" response repository_id full_name default_branch extra
+  [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'Invalid repository identity.' >&2; return 3; }
+  response="$("$gh_bin" api "repos/$repository" --jq '[.id, .full_name, .default_branch] | @tsv' 2>/dev/null)" || { echo 'GitHub repository metadata read-back failed.' >&2; return 3; }
+  [[ "$response" != *$'\n'* && -n "$response" ]] || { echo 'GitHub repository metadata response is malformed.' >&2; return 3; }
+  IFS=$'\t' read -r repository_id full_name default_branch extra <<< "$response"
+  [[ -z "${extra:-}" && "$repository_id" =~ ^[1-9][0-9]*$ && "$full_name" == "$repository" ]] || { echo 'GitHub repository identity metadata is invalid or mismatched.' >&2; return 3; }
+  phase12b_require_branch "$default_branch" || { echo 'GitHub repository default branch metadata is invalid.' >&2; return 3; }
+  printf '%s\t%s\t%s\n' "$repository_id" "$full_name" "$default_branch"
+}
+phase12b_parse_wif_workflow_condition() {
+  local condition="${1:-}" expected_owner_id="${2:-}" expected_repository="${3:-}" expected_workflow_path="${4:-}"
+  local condition_re actual_owner actual_identity sha_list token sha
+  local -a tokens=()
+  local -A seen=()
+  [[ "$expected_owner_id" =~ ^[1-9][0-9]*$ && "$expected_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && "$expected_workflow_path" =~ ^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$ ]] || return 3
+  condition_re="^assertion\\.repository_owner_id[[:space:]]*==[[:space:]]*'([0-9]+)'[[:space:]]*&&[[:space:]]*assertion\\.job_workflow_ref\\.startsWith\\('([^']+@)'\\)[[:space:]]*&&[[:space:]]*assertion\\.job_workflow_sha[[:space:]]+in[[:space:]]+\\[(.*)\\]$"
+  [[ "$condition" =~ $condition_re ]] || return 3
+  actual_owner="${BASH_REMATCH[1]}"
+  actual_identity="${BASH_REMATCH[2]}"
+  sha_list="${BASH_REMATCH[3]}"
+  [[ "$actual_owner" == "$expected_owner_id" && "$actual_identity" == "$expected_repository/$expected_workflow_path@" ]] || return 3
+  [[ -n "$sha_list" ]] || return 3
+  IFS=',' read -r -a tokens <<< "$sha_list"
+  ((${#tokens[@]} > 0)) || return 3
+  for token in "${tokens[@]}"; do
+    token="${token#${token%%[![:space:]]*}}"; token="${token%${token##*[![:space:]]}}"
+    [[ "${#token}" == 42 && "${token:0:1}" == "'" && "${token: -1}" == "'" ]] || return 3
+    sha="${token:1:40}"
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 3
+    [[ -z "${seen[$sha]+x}" ]] || return 3
+    seen["$sha"]=1
+    printf '%s\n' "$sha"
+  done
+}
 phase12b_enable_test_mode() {
   local root="$1"
   [[ -n "$root" && -d "$root" && ! -L "$root" ]] || { echo 'Test fixture root must be an existing non-symlink directory.' >&2; return 3; }
