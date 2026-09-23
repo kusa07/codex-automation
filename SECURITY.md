@@ -92,8 +92,13 @@ automatically repaired.
 
 Migration intent contains identifiers only and is atomically published under
 the automation runtime before target mutation. It contains no credential.
-Runner software comes only from the pinned official HTTPS release and must
-match its pinned SHA-256 before extraction. Migration does not delete the
+Host-specific source path and package version/SHA-256 come only from the
+deterministically resolved private migration desired state. Repository identity
+comes from its canonical caller entry; runner ID/name and execution-area ID
+come from exact local/GitHub/marker read-back and are frozen in the intent.
+Runner software comes only from the deterministic official HTTPS release; its
+GitHub asset digest and downloaded file must both match the configured SHA-256
+before extraction. Migration does not delete the
 legacy directory, change the workflow pin, weaken ACLs, use a personal SID,
 or accept an arbitrary adapter/provider.
 

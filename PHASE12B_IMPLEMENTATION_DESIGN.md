@@ -117,23 +117,28 @@ Migration does not broaden `HOST_STATE`. It separately reports
 `LEGACY_PHASE10_INTERACTIVE`, `UNSUPPORTED_PARTIAL`, or `CONFLICT`. Only the
 complete Phase 10 fingerprint is automatically migratable: managed execution
 area inspect and clean preflight, no execution ownership/residue/process,
-non-reparse `C:\codex-runner` metadata matching exactly one idle repository
-runner with canonical labels, no legacy Service, absent target roots, and a
-trusted non-divergent caller workflow. Partial or ambiguous evidence stops.
+the deterministic private `migrations/<host_id>.yaml` source directory and
+caller reference, local `.runner` metadata matching exactly one idle GitHub
+repository runner with canonical labels, no legacy Service, absent target
+roots, and a trusted non-divergent caller workflow. The caller desired state,
+GitHub repository ID, local runner ID/name/repository URL, and GitHub runner
+registration must agree exactly. Partial or ambiguous evidence stops.
 
 Before target mutation, migration atomically publishes
 `runtime_root\migration\host-migration.json`. Durable lifecycle stages are
 reconciled with filesystem, Service, and GitHub read-back on resume. A
 reversible workflow dispatch fence is read back before quiescence; Batch C
 does not change workflow content or its immutable pin. The execution area and
-its `execution_area_id` are preserved, while the old runner directory and
-`_work` remain retained as non-authoritative evidence.
+its actual `execution_area_id` are frozen into the migration intent and
+preserved, while the configured source runner directory and `_work` remain
+retained as non-authoritative evidence.
 
-The migration package is pinned to official GitHub Actions Runner 2.337.0,
-archive `actions-runner-win-x64-2.337.0.zip`, SHA-256
-`1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc`.
-Checksum verification precedes extraction; no latest-version lookup or
-fallback package authority is permitted.
+The private migration desired state pins an exact semantic runner version and
+lowercase SHA-256. Public code deterministically constructs the official
+`actions/runner` release asset name and URL, requires the GitHub release asset
+digest to match the configured SHA-256, and verifies the downloaded file hash
+before extraction. Arbitrary URLs, latest-version lookup, and fallback package
+authority are not permitted.
 
 Explicit TestMode replaces only external state and mutation providers. Caller
 lifecycle scripts still invoke `caller-runner.ps1` and the same classification,

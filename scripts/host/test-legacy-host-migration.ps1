@@ -34,7 +34,8 @@ try{
   $credential=Copy-Object $base;$credential.CredentialResidue=$true;Assert-Equal (Get-Phase12BMigrationSourceState $credential) UNSUPPORTED_PARTIAL 'credential residue'
   $online=Copy-Object $base;$online.GitHubRunnerStatus='online';Assert-Equal (Get-Phase12BMigrationSourceState $online) UNSUPPORTED_PARTIAL 'legacy runner online'
 
-  $identity=[pscustomobject]@{RepositoryId='1338414331';RepositoryFullName='kusa07/interest-gacha';LegacyRunnerDirectory='C:\codex-runner';LegacyRunnerId='21';LegacyRunnerName='codex-automation-windows-01';ExecutionAreaId='545b497b-f7f6-4d44-90e3-544afa1bab4f';TargetRunnerDirectory='C:\codex-runners\repo-1338414331';TargetRunnerName='codex-repo-1338414331'}
+  $packageVersion='2.337.0';$packageSha='1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc'
+  $identity=[pscustomobject]@{RepositoryId='1338414331';RepositoryFullName='kusa07/interest-gacha';LegacyRunnerDirectory='C:\codex-runner';LegacyRunnerId='21';LegacyRunnerName='codex-automation-windows-01';ExecutionAreaId='545b497b-f7f6-4d44-90e3-544afa1bab4f';TargetRunnerDirectory='C:\codex-runners\repo-1338414331';TargetRunnerName='codex-repo-1338414331';PackageVersion=$packageVersion;PackageSha256=$packageSha}
   $runtime=Join-Path $root 'runtime'
   $written=Initialize-Phase12BMigrationIntent -RuntimeRoot $runtime -Identity $identity
   if(-not(Test-Phase12BMigrationIntent $written)){throw 'valid migration intent rejected'}
@@ -43,14 +44,32 @@ try{
   Write-Phase12BMigrationIntent -RuntimeRoot $runtime -Stage DISPATCH_FENCED -Identity $identity|Out-Null
   Assert-Equal (Read-Phase12BMigrationIntent $runtime).migration_stage DISPATCH_FENCED 'atomic intent update'
 
-  $package=Get-Phase12BRunnerPackageContract
+  $package=Get-Phase12BRunnerPackageContract -Version $packageVersion -Sha256 $packageSha
   Assert-Equal $package.Version 2.337.0 'package version'
   Assert-Equal $package.ArchiveName actions-runner-win-x64-2.337.0.zip 'package archive'
   Assert-Equal $package.Uri 'https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-win-x64-2.337.0.zip' 'package source'
-  Assert-Equal $package.Sha256 '1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc' 'package digest'
+  Assert-Equal $package.Sha256 $packageSha 'package digest'
+  $release=[pscustomobject]@{tag_name='v2.337.0';assets=@([pscustomobject]@{name=$package.ArchiveName;browser_download_url=$package.Uri;digest="sha256:$packageSha";state='uploaded'})}
+  if(-not(Test-Phase12BRunnerReleaseAsset -Contract $package -Release $release)){throw 'official release asset rejected'}
+  $badUrl=Copy-Object $release;$badUrl.assets[0].browser_download_url='https://example.invalid/runner.zip';if(Test-Phase12BRunnerReleaseAsset -Contract $package -Release $badUrl){throw 'arbitrary package URL accepted'}
+  $badDigest=Copy-Object $release;$badDigest.assets[0].digest=('sha256:'+('0'*64));if(Test-Phase12BRunnerReleaseAsset -Contract $package -Release $badDigest){throw 'wrong official asset digest accepted'}
+  foreach($invalidVersion in @('latest','2.337','v2.337.0','2.337.0/../x')){Assert-Throws {Get-Phase12BRunnerPackageContract -Version $invalidVersion -Sha256 $packageSha} "invalid package version $invalidVersion"}
   $digestFile=Join-Path $root 'digest.bin';[IO.File]::WriteAllText($digestFile,'phase12b',[Text.UTF8Encoding]::new($false));$digest=(Get-FileHash $digestFile -Algorithm SHA256).Hash.ToLowerInvariant()
   if(-not(Test-Phase12BFileSha256 -Path $digestFile -ExpectedSha256 $digest)){throw 'exact checksum rejected'}
   if(Test-Phase12BFileSha256 -Path $digestFile -ExpectedSha256 ('0'*64)){throw 'wrong checksum accepted'}
+
+  # Runner ID/name are discovered from local metadata and must exactly match GitHub actual state.
+  $otherLocal=[pscustomobject]@{agentId=77;agentName='another-runner';gitHubUrl='https://github.com/example/other-repo'}
+  $otherGitHub=@([pscustomobject]@{id=77;name='another-runner';status='offline';busy=$false;labels=@(@('self-hosted','Windows','X64','codex-automation')|ForEach-Object{[pscustomobject]@{name=$_}})})
+  $otherMatch=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $otherLocal -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $otherGitHub -ExpectedLabels @('self-hosted','Windows','X64','codex-automation')
+  if(-not $otherMatch.LocalRunnerMetadataExact -or -not $otherMatch.GitHubRunnerExact -or $otherMatch.RepositoryMismatch -or $otherMatch.RunnerIdMismatch -or $otherMatch.RunnerNameMismatch){throw 'generic runner identity was not accepted'}
+  $repoMismatch=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $otherLocal -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '888888888' -GitHubRunners $otherGitHub -ExpectedLabels @('self-hosted','Windows','X64','codex-automation');if(-not $repoMismatch.RepositoryMismatch){throw 'repository ID mismatch accepted'}
+  $urlMismatch=Copy-Object $otherLocal;$urlMismatch.gitHubUrl='https://github.com/example/wrong';$urlResult=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $urlMismatch -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $otherGitHub -ExpectedLabels @('self-hosted','Windows','X64','codex-automation');if(-not $urlResult.RepositoryMismatch){throw '.runner repository URL mismatch accepted'}
+  $idMismatch=Copy-Object $otherGitHub;$idMismatch[0].id=78;$idResult=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $otherLocal -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $idMismatch -ExpectedLabels @('self-hosted','Windows','X64','codex-automation');if(-not $idResult.RunnerIdMismatch){throw 'runner ID mismatch accepted'}
+  $nameMismatch=Copy-Object $otherGitHub;$nameMismatch[0].name='different-runner';$nameResult=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $otherLocal -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $nameMismatch -ExpectedLabels @('self-hosted','Windows','X64','codex-automation');if(-not $nameResult.RunnerNameMismatch){throw 'runner name mismatch accepted'}
+  $genericGuid=[guid]::NewGuid().ToString();$genericIdentity=[pscustomobject]@{RepositoryId='999999999';RepositoryFullName='example/other-repo';LegacyRunnerDirectory='D:\legacy-runner';LegacyRunnerId='77';LegacyRunnerName='another-runner';ExecutionAreaId=$genericGuid;TargetRunnerDirectory='D:\runners\repo-999999999';TargetRunnerName='codex-repo-999999999';PackageVersion=$packageVersion;PackageSha256=$packageSha}
+  $genericRuntime=Join-Path $root 'generic-runtime';$genericIntent=Initialize-Phase12BMigrationIntent -RuntimeRoot $genericRuntime -Identity $genericIdentity
+  Assert-Equal $genericIntent.execution_area_id $genericGuid 'generic execution area ID freeze';Assert-Equal $genericIntent.repository_id 999999999 'generic repository ID freeze';Assert-Equal $genericIntent.legacy_runner_name another-runner 'generic runner name freeze'
 
   $state=[pscustomobject]@{IdentityConflict=$false;UnknownState=$false;DispatchFenced=$false;Quiescent=$false;TargetHostPrepared=$false;PackageVerified=$false;ExecutionAreaIdPreserved=$true;AclExact=$false;LegacyRegistered=$true;TargetRegistered=$false;ServiceInstalled=$false;ServiceRunning=$false;ServiceExact=$false;ActiveExact=$false;LegacyDirectoryRetained=$true}
   $actions=[Collections.Generic.List[string]]::new();$stages=[Collections.Generic.List[string]]::new()
@@ -73,12 +92,13 @@ try{
     Assert-Equal $resume.Stage MIGRATION_COMPLETE "resume $start"
   }
   Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage TARGET_RUNNER_REGISTERING -Actual ([pscustomobject]@{IdentityConflict=$false;UnknownState=$false;LegacyRegistered=$true;TargetRegistered=$true;PostconditionMatchesStage=$false;NextStagePostcondition=$false;SafeApprovedRecoveryCandidate=$false})) MANUAL_INTERVENTION_REQUIRED 'dual registration'
+  Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage SERVICE_INSTALLED -Actual ([pscustomobject]@{IdentityConflict=$true;UnknownState=$false;LegacyRegistered=$false;TargetRegistered=$true;PostconditionMatchesStage=$false;NextStagePostcondition=$false;SafeApprovedRecoveryCandidate=$false})) MANUAL_INTERVENTION_REQUIRED 'execution area identity change conflict'
   Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage SERVICE_INSTALLED -Actual ([pscustomobject]@{IdentityConflict=$false;UnknownState=$false;LegacyRegistered=$false;TargetRegistered=$true;PostconditionMatchesStage=$false;NextStagePostcondition=$true;SafeApprovedRecoveryCandidate=$false})) RESUME_SAFE 'post-mutation crash window'
   Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage SERVICE_INSTALLED -Actual ([pscustomobject]@{IdentityConflict=$false;UnknownState=$false;LegacyRegistered=$false;TargetRegistered=$true;PostconditionMatchesStage=$false;NextStagePostcondition=$false;SafeApprovedRecoveryCandidate=$true})) RECOVER_WITH_APPROVAL 'bounded recovery candidate'
   Assert-Equal (Get-Phase12BMigrationRecoveryDecision -Stage '' -Actual ([pscustomobject]@{IdentityConflict=$false;UnknownState=$false;LegacyRegistered=$true;TargetRegistered=$false;PostconditionMatchesStage=$false;NextStagePostcondition=$false;SafeApprovedRecoveryCandidate=$false})) RETRY_SAFE 'pre-intent retry'
 
   # The entry point uses the same classifier and lifecycle; TestMode replaces only providers.
-  $entry=Join-Path $root 'entry';New-Item -ItemType Directory -Path (Join-Path $entry 'callers'),(Join-Path $entry 'bin') -Force|Out-Null
+  $entry=Join-Path $root 'entry';New-Item -ItemType Directory -Path (Join-Path $entry 'callers'),(Join-Path $entry 'migrations'),(Join-Path $entry 'bin') -Force|Out-Null
   $execution=Join-Path $entry 'execution';$runnerRoot=Join-Path $entry 'runners';$entryRuntime=Join-Path $entry 'runtime';$profile=Join-Path $entry 'profile'
   New-Item -ItemType File -Path (Join-Path $entry 'environment.yaml'),(Join-Path $entry 'host.yaml'),(Join-Path $entry 'callers\caller.yaml')|Out-Null
   $yq=@'
@@ -111,13 +131,22 @@ if "%q%"==".secret.id" echo codex-auth-interest-gacha
 if "%q%"==".workflow.path" echo .github/workflows/codex-connectivity-test.yml
 if "%q%"==".runner.enabled" echo true
 if "%q%"==".runner.scope" echo repository
+if "%q%"==".migration_type" echo phase10-interactive
+if "%q%"==".source.caller" echo caller
+if "%q%"==".source.runner_directory" echo C:\codex-runner
+if "%q%"==".package.version" echo 2.337.0
+if "%q%"==".package.sha256" echo 1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc
 '@.Replace('__EXEC__',$execution).Replace('__RUNNER__',$runnerRoot).Replace('__RUNTIME__',$entryRuntime).Replace('__PROFILE__',$profile)
   Set-Content -LiteralPath (Join-Path $entry 'bin\yq.cmd') -Value $yq -NoNewline
   $migration=Copy-Object $base
   foreach($property in @{schema=1;execution_area_id='545b497b-f7f6-4d44-90e3-544afa1bab4f';legacy_runner_id='21';legacy_runner_name='codex-automation-windows-01';workflow_dispatch_state='active';IdentityConflict=$false;UnknownState=$false;DispatchFenced=$false;Quiescent=$true;TargetHostPrepared=$false;PackageVerified=$false;ExecutionAreaIdPreserved=$true;AclExact=$false;LegacyRegistered=$true;TargetRegistered=$false;ServiceInstalled=$false;ServiceRunning=$false;ServiceExact=$false;ActiveExact=$false;LegacyDirectoryRetained=$true}.GetEnumerator()){$migration|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force}
   $migrationFile=Join-Path $entry 'migration.json';$migration|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $migrationFile -NoNewline
   $oldPath=$env:PATH;$env:PATH="$(Join-Path $entry 'bin');$oldPath"
-  try{& (Join-Path $PSScriptRoot 'migrate-host.ps1') -PrivateConfig (Join-Path $entry 'environment.yaml') -Approve -TestMode -FixtureRoot $entry -MigrationReadbackFile $migrationFile|Out-Null}finally{$env:PATH=$oldPath}
+  try{
+    Assert-Throws {& (Join-Path $PSScriptRoot 'migrate-host.ps1') -PrivateConfig (Join-Path $entry 'environment.yaml') -Approve -TestMode -FixtureRoot $entry -MigrationReadbackFile $migrationFile|Out-Null} 'missing migration desired state'
+    New-Item -ItemType File -Path (Join-Path $entry 'migrations\test-host.yaml')|Out-Null
+    & (Join-Path $PSScriptRoot 'migrate-host.ps1') -PrivateConfig (Join-Path $entry 'environment.yaml') -Approve -TestMode -FixtureRoot $entry -MigrationReadbackFile $migrationFile|Out-Null
+  }finally{$env:PATH=$oldPath}
   $entryState=Get-Content -LiteralPath $migrationFile -Raw|ConvertFrom-Json
   Assert-Equal (Read-Phase12BMigrationIntent $entryRuntime).migration_stage MIGRATION_COMPLETE 'entry point durable completion'
   Assert-Equal $entryState.workflow_dispatch_state active 'entry point restored dispatch'

@@ -887,9 +887,12 @@ execution area、execution ownership、local/GitHub runner identity、Service
 
 移行は既存execution area markerと`execution_area_id`を再生成しない。
 dispatch fenceとquiescence再確認後にのみlegacy registrationを解除し、
-固定version/checksum検証済みpackageからrepository-ID scoped runnerと
-official Windows Serviceを構成する。`C:\codex-runner`と`_work`は削除せず、
-非authoritativeなretired evidenceとして残す。
+private migration desired-stateの固定version/checksumをofficial GitHub
+release metadataとdownloaded hashの両方で検証したpackageから、
+repository-ID scoped runnerとofficial Windows Serviceを構成する。設定された
+source runner directoryと`_work`は削除せず、非authoritativeなretired
+evidenceとして残す。source pathやcallerは`host_id`から決定論的に解決する
+`migrations/<host_id>.yaml`だけをauthorityとし、任意CLI pathは受理しない。
 
 自動migrationよりも「古ければ止まる」を初期方針とする。
 
