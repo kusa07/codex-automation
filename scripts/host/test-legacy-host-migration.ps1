@@ -23,6 +23,7 @@ try{
     ExecutionRootPresent=$true;ExecutionInspect=$true;ExecutionPreflight=$true;ExecutionAreaIdExact=$true;CurrentRunState='ABSENT';MutexState='FREE';ResidualClean=$true;CredentialResidue=$false;RelevantProcessCount=0
     LegacyRunnerPresent=$true;LegacyRunnerSafe=$true;LegacyRunnerFilesExact=$true;LocalRunnerMetadataExact=$true;GitHubRunnerCount=1;GitHubRunnerExact=$true;GitHubRunnerStatus='offline';GitHubRunnerBusy=$false;ActiveGitHubJobCount=0
     LegacyServicePresent=$false;RunnerProcessCount=0;TargetRootsAbsent=$true;WorkflowState='MANAGED_OLD';DispatchInitiallyActive=$true
+    github_actual_repository_id='1338414331';github_actual_repository_full_name='kusa07/interest-gacha';github_repository_read_error=$false
   }
   Assert-Equal (Get-Phase12BMigrationSourceState $base) LEGACY_PHASE10_INTERACTIVE 'exact legacy fingerprint'
   $managed=Copy-Object $base;$managed.HostState='EXISTING';$managed.CurrentManagedExact=$true
@@ -67,6 +68,22 @@ try{
   $urlMismatch=Copy-Object $otherLocal;$urlMismatch.gitHubUrl='https://github.com/example/wrong';$urlResult=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $urlMismatch -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $otherGitHub -ExpectedLabels @('self-hosted','Windows','X64','codex-automation');if(-not $urlResult.RepositoryMismatch){throw '.runner repository URL mismatch accepted'}
   $idMismatch=Copy-Object $otherGitHub;$idMismatch[0].id=78;$idResult=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $otherLocal -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $idMismatch -ExpectedLabels @('self-hosted','Windows','X64','codex-automation');if(-not $idResult.RunnerIdMismatch){throw 'runner ID mismatch accepted'}
   $nameMismatch=Copy-Object $otherGitHub;$nameMismatch[0].name='different-runner';$nameResult=Get-Phase12BLegacyRunnerIdentityMatch -LocalRunner $otherLocal -CallerRepository 'example/other-repo' -CallerRepositoryId '999999999' -ActualRepositoryId '999999999' -GitHubRunners $nameMismatch -ExpectedLabels @('self-hosted','Windows','X64','codex-automation');if(-not $nameResult.RunnerNameMismatch){throw 'runner name mismatch accepted'}
+  $repositoryIdentityCases=@(
+    @{Name='exact repository identity';IntentId='123';IntentName='example/repo';CallerId='123';CallerName='example/repo';ActualId='123';ActualName='example/repo';Read=$true;Exact=$true;Conflict=$false;Unknown=$false},
+    @{Name='same name different GitHub ID';IntentId='123';IntentName='example/repo';CallerId='123';CallerName='example/repo';ActualId='456';ActualName='example/repo';Read=$true;Exact=$false;Conflict=$true;Unknown=$false},
+    @{Name='caller desired-state changed';IntentId='123';IntentName='example/repo';CallerId='456';CallerName='example/repo';ActualId='456';ActualName='example/repo';Read=$true;Exact=$false;Conflict=$true;Unknown=$false},
+    @{Name='stale intent';IntentId='123';IntentName='example/repo';CallerId='456';CallerName='example/repo';ActualId='123';ActualName='example/repo';Read=$true;Exact=$false;Conflict=$true;Unknown=$false},
+    @{Name='GitHub repository read failure';IntentId='123';IntentName='example/repo';CallerId='123';CallerName='example/repo';ActualId='';ActualName='';Read=$false;Exact=$false;Conflict=$false;Unknown=$true},
+    @{Name='malformed repository response';IntentId='123';IntentName='example/repo';CallerId='123';CallerName='example/repo';ActualId='not-an-id';ActualName='malformed';Read=$true;Exact=$false;Conflict=$false;Unknown=$true},
+    @{Name='missing immutable repository ID';IntentId='123';IntentName='example/repo';CallerId='123';CallerName='example/repo';ActualId='';ActualName='example/repo';Read=$true;Exact=$false;Conflict=$false;Unknown=$true},
+    @{Name='repository full name mismatch';IntentId='123';IntentName='example/repo';CallerId='123';CallerName='example/repo';ActualId='123';ActualName='example/recreated';Read=$true;Exact=$false;Conflict=$true;Unknown=$false}
+  )
+  foreach($case in $repositoryIdentityCases){
+    $match=Get-Phase12BMigrationRepositoryIdentityMatch -IntentRepositoryId $case.IntentId -IntentRepositoryFullName $case.IntentName -CallerRepositoryId $case.CallerId -CallerRepositoryFullName $case.CallerName -ActualRepositoryId $case.ActualId -ActualRepositoryFullName $case.ActualName -ReadSucceeded $case.Read
+    Assert-Equal $match.Exact $case.Exact "$($case.Name) exact"
+    Assert-Equal $match.IdentityConflict $case.Conflict "$($case.Name) conflict"
+    Assert-Equal $match.UnknownState $case.Unknown "$($case.Name) unknown"
+  }
   $genericGuid=[guid]::NewGuid().ToString();$genericIdentity=[pscustomobject]@{RepositoryId='999999999';RepositoryFullName='example/other-repo';LegacyRunnerDirectory='D:\legacy-runner';LegacyRunnerId='77';LegacyRunnerName='another-runner';ExecutionAreaId=$genericGuid;TargetRunnerDirectory='D:\runners\repo-999999999';TargetRunnerName='codex-repo-999999999';PackageVersion=$packageVersion;PackageSha256=$packageSha}
   $genericRuntime=Join-Path $root 'generic-runtime';$genericIntent=Initialize-Phase12BMigrationIntent -RuntimeRoot $genericRuntime -Identity $genericIdentity
   Assert-Equal $genericIntent.execution_area_id $genericGuid 'generic execution area ID freeze';Assert-Equal $genericIntent.repository_id 999999999 'generic repository ID freeze';Assert-Equal $genericIntent.legacy_runner_name another-runner 'generic runner name freeze'
@@ -151,6 +168,21 @@ if "%q%"==".package.sha256" echo 1150692afa94e71f872017e254ea55b6eece1eece3fe7e3
   Assert-Equal (Read-Phase12BMigrationIntent $entryRuntime).migration_stage MIGRATION_COMPLETE 'entry point durable completion'
   Assert-Equal $entryState.workflow_dispatch_state active 'entry point restored dispatch'
   foreach($action in @('FenceDispatch','PrepareTargetHost','UnregisterLegacy','RegisterTarget','InstallService','StartService','WriteActiveMetadata','RestoreDispatch')){if(@($entryState.mutation_calls) -notcontains $action){throw "entry point provider action missing: $action"}}
+
+  # Resume always revalidates intent, caller desired state, and GitHub actual repository identity before mutation.
+  $entryIdentity=[pscustomobject]@{RepositoryId='1338414331';RepositoryFullName='kusa07/interest-gacha';LegacyRunnerDirectory='C:\codex-runner';LegacyRunnerId='21';LegacyRunnerName='codex-automation-windows-01';ExecutionAreaId='545b497b-f7f6-4d44-90e3-544afa1bab4f';TargetRunnerDirectory=(Join-Path $runnerRoot 'repo-1338414331');TargetRunnerName='codex-repo-1338414331';PackageVersion=$packageVersion;PackageSha256=$packageSha}
+  function Assert-EntryIdentityGuard([string]$guardStage,[bool]$legacyRegistered,[bool]$targetRegistered,[string]$actualId,[string]$actualName,[bool]$readError,[string]$label){
+    Write-Phase12BMigrationIntent -RuntimeRoot $entryRuntime -Stage $guardStage -Identity $entryIdentity|Out-Null
+    $guard=Copy-Object $entryState
+    foreach($property in @{IdentityConflict=$false;UnknownState=$false;workflow_dispatch_state='disabled_manually';DispatchFenced=$true;Quiescent=$true;TargetHostPrepared=$true;PackageVerified=$true;ExecutionAreaIdPreserved=$true;AclExact=$true;LegacyRegistered=$legacyRegistered;TargetRegistered=$targetRegistered;ServiceInstalled=$false;ServiceRunning=$false;ServiceExact=$false;ActiveExact=$false;LegacyDirectoryRetained=$true;github_actual_repository_id=$actualId;github_actual_repository_full_name=$actualName;github_repository_read_error=$readError;mutation_calls=@()}.GetEnumerator()){$guard|Add-Member -NotePropertyName $property.Key -NotePropertyValue $property.Value -Force}
+    $guard|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $migrationFile -NoNewline
+    Assert-Throws {& (Join-Path $PSScriptRoot 'migrate-host.ps1') -PrivateConfig (Join-Path $entry 'environment.yaml') -Approve -TestMode -FixtureRoot $entry -MigrationReadbackFile $migrationFile|Out-Null} $label
+    $afterGuard=Get-Content -LiteralPath $migrationFile -Raw|ConvertFrom-Json
+    if(@($afterGuard.mutation_calls).Count -ne 0){throw "$label performed a mutation before repository identity validation"}
+  }
+  Assert-EntryIdentityGuard -guardStage LEGACY_RUNNER_UNREGISTERING -legacyRegistered $true -targetRegistered $false -actualId '456' -actualName 'kusa07/interest-gacha' -readError $false -label 'pre-unregister same-name different-ID guard'
+  Assert-EntryIdentityGuard -guardStage TARGET_RUNNER_REGISTERING -legacyRegistered $false -targetRegistered $false -actualId '456' -actualName 'kusa07/interest-gacha' -readError $false -label 'pre-register same-name different-ID guard'
+  Assert-EntryIdentityGuard -guardStage SERVICE_INSTALLED -legacyRegistered $false -targetRegistered $true -actualId '' -actualName '' -readError $true -label 'resume repository read failure guard'
 
   'phase12b legacy host migration tests passed'
 }finally{if(Test-Path Env:PHASE12B_TEST_ADAPTER){Remove-Item Env:PHASE12B_TEST_ADAPTER};if(Test-Path -LiteralPath $root){Remove-Item -LiteralPath $root -Recurse -Force}}

@@ -83,8 +83,45 @@ function Get-LegacySourceObservation {
         LegacyServicePresent=($services.Count -gt 0);RunnerProcessCount=$runnerProcesses.Count;TargetRootsAbsent=$targetRootsAbsent;WorkflowState=(Get-TrustedWorkflowState);workflow_dispatch_state=(Get-WorkflowDispatchState);DispatchInitiallyActive=((Get-WorkflowDispatchState) -eq 'active')
     }
 }
+function Get-MigrationRepositoryIdentityState($FixtureState) {
+    $readSucceeded=$false;$actualRepositoryId='';$actualRepositoryFullName=''
+    if($TestMode){
+        $state=if($null -ne $FixtureState){$FixtureState}else{Read-TestMigrationState}
+        $readSucceeded=-not($state.PSObject.Properties['github_repository_read_error'] -and [bool]$state.github_repository_read_error)
+        if($state.PSObject.Properties['github_actual_repository_id']){$actualRepositoryId=[string]$state.github_actual_repository_id}
+        if($state.PSObject.Properties['github_actual_repository_full_name']){$actualRepositoryFullName=[string]$state.github_actual_repository_full_name}
+    } else {
+        try {
+            $repoRaw=& gh api "repos/$($identity.RepositoryFullName)" 2>$null
+            if($LASTEXITCODE -ne 0){throw 'repository query failed'}
+            $actualRepository=$repoRaw|ConvertFrom-Json -ErrorAction Stop
+            if($actualRepository.PSObject.Properties['id']){$actualRepositoryId=[string]$actualRepository.id}
+            if($actualRepository.PSObject.Properties['full_name']){$actualRepositoryFullName=[string]$actualRepository.full_name}
+            $readSucceeded=$true
+        } catch {
+            $readSucceeded=$false
+        }
+    }
+    Get-Phase12BMigrationRepositoryIdentityMatch `
+        -IntentRepositoryId ([string]$identity.RepositoryId) `
+        -IntentRepositoryFullName ([string]$identity.RepositoryFullName) `
+        -CallerRepositoryId ([string]$caller.RepositoryId) `
+        -CallerRepositoryFullName ([string]$caller.Repository) `
+        -ActualRepositoryId $actualRepositoryId `
+        -ActualRepositoryFullName $actualRepositoryFullName `
+        -ReadSucceeded $readSucceeded
+}
 function Get-ActualMigrationState {
-    if($TestMode){return Read-TestMigrationState}
+    if($TestMode){
+        $state=Read-TestMigrationState
+        $repositoryIdentity=Get-MigrationRepositoryIdentityState $state
+        $state|Add-Member -NotePropertyName IdentityConflict -NotePropertyValue ([bool]$state.IdentityConflict -or [bool]$repositoryIdentity.IdentityConflict) -Force
+        $state|Add-Member -NotePropertyName UnknownState -NotePropertyValue ([bool]$state.UnknownState -or [bool]$repositoryIdentity.UnknownState) -Force
+        $state|Add-Member -NotePropertyName ActualRepositoryId -NotePropertyValue ([string]$repositoryIdentity.ActualRepositoryId) -Force
+        $state|Add-Member -NotePropertyName ActualRepositoryFullName -NotePropertyValue ([string]$repositoryIdentity.ActualRepositoryFullName) -Force
+        return $state
+    }
+    $repositoryIdentity=Get-MigrationRepositoryIdentityState
     $ghRaw=& gh api "repos/$($caller.Repository)/actions/runners?per_page=100" 2>$null;if($LASTEXITCODE -ne 0){throw 'GitHub runner read-back failed.'};$runners=@(($ghRaw|ConvertFrom-Json -ErrorAction Stop).runners)
     $legacy=@($runners|Where-Object{[string]$_.id -eq [string]$identity.LegacyRunnerId -and [string]$_.name -ceq [string]$identity.LegacyRunnerName})
     $canonical=@($runners|Where-Object{[string]$_.name -ceq [string]$identity.TargetRunnerName})
@@ -104,8 +141,8 @@ function Get-ActualMigrationState {
     $serviceExact=$service.Classification -eq 'EXISTING'
     $serviceRunning=$serviceExact -and [string]$service.State -eq 'Running'
     $activeExact=$metadata -and [string]$metadata.lifecycle_state -eq 'ACTIVE' -and $targetOnline -and $serviceRunning -and (Get-Phase12BHostState -RuntimeRoot $h.runtime_root -ExecutionRoot $h.execution_root -HostId $h.host_id -ProfileRoot $h.profile_root -RunnerRoot $h.runner_root) -eq 'EXISTING'
-    $identityConflict=$legacy.Count -gt 1 -or $canonical.Count -gt 1 -or ($legacy.Count -eq 1 -and $canonical.Count -eq 1) -or ($legacy.Count -eq 1 -and -not $legacyExact) -or ($canonical.Count -eq 1 -and -not $targetExact) -or -not $executionAreaPreserved
-    [pscustomobject]@{IdentityConflict=$identityConflict;UnknownState=$false;DispatchFenced=((Get-WorkflowDispatchState) -eq 'disabled_manually');Quiescent=((Wait-Phase12BCallerQuiescence -ExecutionRoot $h.execution_root -RepositoryId $caller.RepositoryId -RepositoryFullName $caller.Repository -TimeoutSeconds 0).Result -eq 'PASS');TargetHostPrepared=[bool]$hostPrepared;PackageVerified=$packageOk;ExecutionAreaIdPreserved=$executionAreaPreserved;AclExact=$aclExact;LegacyRegistered=$legacyExact;TargetRegistered=$targetExact;ServiceInstalled=$serviceExact;ServiceRunning=$serviceRunning;ServiceExact=$serviceExact;ActiveExact=[bool]$activeExact;LegacyDirectoryRetained=(Test-Path -LiteralPath $identity.LegacyRunnerDirectory -PathType Container)}
+    $identityConflict=[bool]$repositoryIdentity.IdentityConflict -or $legacy.Count -gt 1 -or $canonical.Count -gt 1 -or ($legacy.Count -eq 1 -and $canonical.Count -eq 1) -or ($legacy.Count -eq 1 -and -not $legacyExact) -or ($canonical.Count -eq 1 -and -not $targetExact) -or -not $executionAreaPreserved
+    [pscustomobject]@{IdentityConflict=$identityConflict;UnknownState=[bool]$repositoryIdentity.UnknownState;ActualRepositoryId=[string]$repositoryIdentity.ActualRepositoryId;ActualRepositoryFullName=[string]$repositoryIdentity.ActualRepositoryFullName;DispatchFenced=((Get-WorkflowDispatchState) -eq 'disabled_manually');Quiescent=((Wait-Phase12BCallerQuiescence -ExecutionRoot $h.execution_root -RepositoryId $caller.RepositoryId -RepositoryFullName $caller.Repository -TimeoutSeconds 0).Result -eq 'PASS');TargetHostPrepared=[bool]$hostPrepared;PackageVerified=$packageOk;ExecutionAreaIdPreserved=$executionAreaPreserved;AclExact=$aclExact;LegacyRegistered=$legacyExact;TargetRegistered=$targetExact;ServiceInstalled=$serviceExact;ServiceRunning=$serviceRunning;ServiceExact=$serviceExact;ActiveExact=[bool]$activeExact;LegacyDirectoryRetained=(Test-Path -LiteralPath $identity.LegacyRunnerDirectory -PathType Container)}
 }
 function Assert-OfficialRunnerPackageProvenance {
     if($TestMode){return}

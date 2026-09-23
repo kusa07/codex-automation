@@ -852,6 +852,39 @@ function Test-Phase12BRunnerReleaseAsset {
         [string]$asset.state -ceq 'uploaded'
 }
 
+function Get-Phase12BMigrationRepositoryIdentityMatch {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$IntentRepositoryId,
+        [Parameter(Mandatory)][string]$IntentRepositoryFullName,
+        [Parameter(Mandatory)][string]$CallerRepositoryId,
+        [Parameter(Mandatory)][string]$CallerRepositoryFullName,
+        [AllowEmptyString()][string]$ActualRepositoryId,
+        [AllowEmptyString()][string]$ActualRepositoryFullName,
+        [Parameter(Mandatory)][bool]$ReadSucceeded
+    )
+    $idPattern='^[1-9][0-9]*$'
+    $namePattern='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    $intentValid=$IntentRepositoryId -match $idPattern -and $IntentRepositoryFullName -match $namePattern
+    $callerValid=$CallerRepositoryId -match $idPattern -and $CallerRepositoryFullName -match $namePattern
+    $actualValid=$ReadSucceeded -and $ActualRepositoryId -match $idPattern -and $ActualRepositoryFullName -match $namePattern
+    $unknownState=-not $ReadSucceeded -or -not $actualValid
+    $identityConflict=-not($intentValid -and $callerValid) -or (
+        $actualValid -and -not(
+            $IntentRepositoryId -ceq $CallerRepositoryId -and
+            $CallerRepositoryId -ceq $ActualRepositoryId -and
+            $IntentRepositoryFullName -ceq $CallerRepositoryFullName -and
+            $CallerRepositoryFullName -ceq $ActualRepositoryFullName
+        )
+    )
+    [pscustomobject]@{
+        Exact=(-not $unknownState -and -not $identityConflict)
+        IdentityConflict=$identityConflict
+        UnknownState=$unknownState
+        ActualRepositoryId=$ActualRepositoryId
+        ActualRepositoryFullName=$ActualRepositoryFullName
+    }
+}
+
 function Get-Phase12BLegacyRunnerIdentityMatch {
     [CmdletBinding()]param(
         [Parameter(Mandatory)]$LocalRunner,
@@ -1037,4 +1070,4 @@ function Invoke-Phase12BMigrationLifecycle {
     [pscustomobject]@{Result='PASS';Stage=$stage;Postcondition='MIGRATION_COMPLETE'}
 }
 
-Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle
+Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle
