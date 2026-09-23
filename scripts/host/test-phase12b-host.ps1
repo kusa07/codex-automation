@@ -11,6 +11,37 @@ try {
   New-Item -ItemType Directory -Path $runtime|Out-Null;if((Get-Phase12BHostState -RuntimeRoot $runtime -ExecutionRoot $execution -HostId host -ProfileRoot $profile -RunnerRoot $runnerRoot) -ne 'INCONSISTENT'){throw 'partial host was accepted'};Remove-Item -LiteralPath $runtime -Recurse -Force
   & $area -Action ensure -Root $execution|Out-Null;New-Item -ItemType Directory -Path $runtime,$profile,$runnerRoot -Force|Out-Null;@{schema=1;host_id='host';service_identity='NT AUTHORITY\NETWORK SERVICE';service_sid='S-1-5-20';execution_root=$execution;runtime_root=$runtime}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $runtime 'runtime.json') -NoNewline
   if((Get-Phase12BHostState -RuntimeRoot $runtime -ExecutionRoot $execution -HostId host -ProfileRoot $profile -RunnerRoot $runnerRoot) -ne 'EXISTING'){throw 'EXISTING host classification failed'}
+  # Fresh production Onboard uses the same operation-bound atomic package
+  # contract as migration.  The argument builder is the production call path,
+  # while the no-op ACL callback is the only test provider substitution.
+  $onboardPackage=Join-Path $root 'onboard-runner.zip'
+  $onboardPackageSource=Join-Path $root 'onboard-package-source';New-Item -ItemType Directory -Path (Join-Path $onboardPackageSource 'bin') -Force|Out-Null
+  foreach($relative in @('config.cmd','run.cmd','bin\Runner.Listener.exe','bin\RunnerService.exe')){New-Item -ItemType File -Path (Join-Path $onboardPackageSource $relative) -Force|Out-Null}
+  Compress-Archive -Path (Join-Path $onboardPackageSource '*') -DestinationPath $onboardPackage
+  $onboardHost=[pscustomobject]@{HostId='host';RunnerRoot=$runnerRoot;RunnerPackagePath=$onboardPackage}
+  $onboardIdentity=Get-Phase12BCallerRunnerIdentity -RunnerRoot $runnerRoot -RepositoryId '12345'
+  $onboardArguments=Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host $onboardHost -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'
+  if([string]$onboardArguments.HostRunnerRoot -cne $runnerRoot -or [string]$onboardArguments.RunnerRoot -cne $onboardIdentity.RunnerDirectory -or [string]$onboardArguments.RunnerPackagePath -cne $onboardPackage){throw 'Fresh Onboard canonical package arguments were not propagated.'}
+  $operationId=[string]$onboardArguments.OperationId;$parsedOperation=[guid]::Empty
+  if(-not[guid]::TryParseExact($operationId,'D',[ref]$parsedOperation)){throw 'Fresh Onboard package operation ID is not filesystem-safe.'}
+  $retryArguments=Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host $onboardHost -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'
+  if([string]$retryArguments.OperationId -cne $operationId){throw 'Fresh Onboard package operation ID changed across retries.'}
+  if((Get-Phase12BOnboardPackageOperationId -HostId host -RepositoryId 67890) -ceq $operationId){throw 'Fresh Onboard package operation ID is not repository-scoped.'}
+  $partialStage=Join-Path $runnerRoot ".migration-staging\$operationId\runner";New-Item -ItemType Directory -Path $partialStage -Force|Out-Null;New-Item -ItemType File -Path (Join-Path $partialStage 'partial.tmp')|Out-Null
+  $onboardHostRoot=[string]$onboardArguments.HostRunnerRoot;$onboardTarget=[string]$onboardArguments.RunnerRoot;$onboardPackageInput=[string]$onboardArguments.RunnerPackagePath
+  $publish=Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardHostRoot -TargetRunnerDirectory $onboardTarget -OperationId $operationId -PackagePath $onboardPackageInput -ApplyAcl {}
+  if($publish.State -ne 'PUBLISHED' -or -not(Test-Phase12BRunnerPackageTree $onboardIdentity.RunnerDirectory)){throw 'Fresh Onboard partial staging did not recover through atomic publication.'}
+  if((Install-Phase12BRunnerPackageAtomically -RunnerRoot $onboardHostRoot -TargetRunnerDirectory $onboardTarget -OperationId $operationId -PackagePath $onboardPackageInput -ApplyAcl {}).State -ne 'ALREADY_PUBLISHED'){throw 'Fresh Onboard post-publication retry was not idempotent.'}
+  Assert-Throws {Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host ([pscustomobject]@{HostId='host';RunnerRoot='';RunnerPackagePath=$onboardPackage}) -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'} 'missing HostRunnerRoot was accepted'
+  $wrongHostRoot=Join-Path $root 'wrong-runner-root';New-Item -ItemType Directory -Path $wrongHostRoot|Out-Null
+  Assert-Throws {Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host ([pscustomobject]@{HostId='host';RunnerRoot=$wrongHostRoot;RunnerPackagePath=$onboardPackage}) -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'} 'HostRunnerRoot mismatch was accepted'
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory (Join-Path $root 'outside-runner-root') -OperationId $operationId -PackagePath $onboardPackage} 'target outside HostRunnerRoot was accepted'
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory (Join-Path $runnerRoot 'repo-67890') -OperationId '' -PackagePath $onboardPackage} 'missing OperationId was accepted'
+  $partialFinal=Join-Path $runnerRoot 'repo-67890';New-Item -ItemType Directory -Path $partialFinal|Out-Null;New-Item -ItemType File -Path (Join-Path $partialFinal 'partial.tmp')|Out-Null
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory $partialFinal -OperationId (Get-Phase12BOnboardPackageOperationId -HostId host -RepositoryId 67890) -PackagePath $onboardPackage} 'Fresh Onboard partial final root was accepted'
+  $unknownStaging=Join-Path $runnerRoot '.migration-staging\unknown-operation';New-Item -ItemType Directory -Path $unknownStaging -Force|Out-Null
+  Assert-Throws {Install-Phase12BRunnerPackageAtomically -RunnerRoot $runnerRoot -TargetRunnerDirectory (Join-Path $runnerRoot 'repo-67891') -OperationId (Get-Phase12BOnboardPackageOperationId -HostId host -RepositoryId 67891) -PackagePath $onboardPackage} 'Fresh Onboard unknown staging was accepted'
+  if(-not(Test-Path -LiteralPath $unknownStaging -PathType Container)){throw 'Fresh Onboard unknown staging was deleted.'}
   if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 2 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('X64')) -ne 'INCONSISTENT'){throw 'wrong repository ID was accepted'}
   if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 1 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('Windows')) -ne 'INCONSISTENT'){throw 'wrong labels were accepted'}
   if((Get-Phase12BRunnerState -LocalPresent:$true -ServicePresent:$true -GitHubPresent:$true -ExpectedRepositoryId 1 -ActualRepositoryId 1 -ActualServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' -ExpectedLabels @('X64') -ActualLabels @('X64') -ExpectedPathName 'a\run.cmd' -ActualPathName 'b\run.cmd') -ne 'INCONSISTENT'){throw 'wrong PathName was accepted'}
@@ -47,11 +78,14 @@ try {
   Invoke-Expression $mutexFunction[0].Extent.Text;$networkServiceSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-20');$mutexSecurity=New-MutexSecurity $networkServiceSid
   $mutexRules=@($mutexSecurity.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));if($mutexRules.Count -ne 1 -or $mutexRules[0].IdentityReference.Value -cne 'S-1-5-20' -or $mutexRules[0].MutexRights -ne [Security.AccessControl.MutexRights]::FullControl -or $mutexRules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow){throw 'production mutex ACL construction is not exact NETWORK SERVICE full control'}
   $adapter=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Raw
-  foreach($text in 'InstallPackage','StartService','StopService','Unregister','RemoveService','Assert-ServicePath','RunnerPackagePath','registration-token','remove-token','Runner package target must be an empty','--runasservice','--windowslogonaccount','RunnerService.exe','.service'){if($adapter -notmatch [regex]::Escape($text)){throw "runner lifecycle stage missing: $text"}}
+  foreach($text in 'InstallPackage','StartService','StopService','Unregister','RemoveService','Assert-ServicePath','RunnerPackagePath','HostRunnerRoot','OperationId','Install-Phase12BRunnerPackageAtomically','registration-token','remove-token','--runasservice','--windowslogonaccount','RunnerService.exe','.service'){if($adapter -notmatch [regex]::Escape($text)){throw "runner lifecycle stage missing: $text"}}
   foreach($forbidden in 'sc.exe create','cmd.exe /c'){if($adapter -match [regex]::Escape($forbidden)){throw "non-official service host remains: $forbidden"}}
   foreach($text in 'CODEX_RUNNER_PACKAGE_PATH','CODEX_RUNNER_TOKEN_COMMAND'){if($adapter -match [regex]::Escape($text)){throw "operator environment remained runner authority: $text"}}
   foreach($file in 'bootstrap-host.ps1','migrate-host.ps1','verify-host.ps1'){ $text=Get-Content -LiteralPath (Join-Path $PSScriptRoot $file) -Raw;if($text -match 'NOT_IMPLEMENTED_BATCH_A|CREATE_RUNNERS=false|INSTALL_WINDOWS_SERVICES=false|\[string\]\$RunnerAdapter' -or ($file -eq 'bootstrap-host.ps1' -and $text -match '\[string\]\$RunnerPackagePath')){throw "unsafe or empty apply path remains: $file"} }
   # A constrained yq v4 double provides a complete desired-state fixture. No real tool or host is used.
+  $runnerPackage=Join-Path $root 'runner-package.zip';$runnerPackageSource=Join-Path $root 'runner-package-source';New-Item -ItemType Directory -Path (Join-Path $runnerPackageSource 'bin') -Force|Out-Null
+  foreach($relative in @('config.cmd','run.cmd','bin\Runner.Listener.exe','bin\RunnerService.exe')){New-Item -ItemType File -Path (Join-Path $runnerPackageSource $relative) -Force|Out-Null}
+  Compress-Archive -Path (Join-Path $runnerPackageSource '*') -DestinationPath $runnerPackage
   $bin=Join-Path $root 'bin';New-Item -ItemType Directory -Path $bin|Out-Null
   @'
 @echo off
@@ -68,6 +102,7 @@ if "%q%"==".paths.profile_root" echo __PROFILE__
 if "%q%"==".runner.mode" echo windows-service
 if "%q%"==".runner.service_identity" echo network-service
 if "%q%"==".runner.service_sid" echo S-1-5-20
+if "%q%"==".runner.package_path" echo __PACKAGE__
 if "%q%"==".execution.serialization" echo global-mutex
 if "%q%"==".runner.labels[]" (echo self-hosted&echo Windows&echo X64&echo codex-automation)
 if "%q%"==".github.owner_id" echo 32902649
@@ -82,7 +117,7 @@ if "%q%"==".secret.id" echo codex-auth-example
 if "%q%"==".workflow.path" echo .github/workflows/codex-connectivity-test.yml
 if "%q%"==".runner.enabled" echo true
 if "%q%"==".runner.scope" echo repository
-'@.Replace('__EXEC__',$execution).Replace('__RUNNERS__',$runnerRoot).Replace('__RUNTIME__',$runtime).Replace('__PROFILE__',$profile)|Set-Content -LiteralPath (Join-Path $bin 'yq.cmd') -NoNewline
+'@.Replace('__EXEC__',$execution).Replace('__RUNNERS__',$runnerRoot).Replace('__RUNTIME__',$runtime).Replace('__PROFILE__',$profile).Replace('__PACKAGE__',$runnerPackage)|Set-Content -LiteralPath (Join-Path $bin 'yq.cmd') -NoNewline
   New-Item -ItemType Directory -Path (Join-Path $root 'callers')|Out-Null;New-Item -ItemType File -Path (Join-Path $root 'environment.yaml'),(Join-Path $root 'host.yaml'),(Join-Path $root 'callers/example.yaml')|Out-Null
   $rendered=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\templates\caller\codex-connectivity-test.yml.tpl')).Replace('__AUTOMATION_REPOSITORY__','kusa07/codex-automation').Replace('__AUTOMATION_WORKFLOW_PATH__','.github/workflows/codex-run.yml').Replace('__AUTOMATION_WORKFLOW_SHA__','352857a387b1f855920fb8d1587091b31e518c21').Replace('__GOOGLE_CLOUD_PROJECT_ID__','codex-automation-506111').Replace('__WORKLOAD_IDENTITY_PROVIDER__','projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions').Replace('__CODEX_AUTH_SECRET_ID__','codex-auth-example');$content=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($rendered))
   $member='principalSet://iam.googleapis.com/projects/896979145485/locations/global/workloadIdentityPools/github/attribute.repository_id/12345'
@@ -100,7 +135,7 @@ if "%q%"==".runner.scope" echo repository
   # Synthetic existing host makes migration prove it grounds and passes its actual service name to the adapter.
   & $area -Action ensure -Root $execution|Out-Null;New-Item -ItemType Directory -Path $runtime,$profile,$runnerRoot -Force|Out-Null;@{schema=1;host_id='host';service_identity='NT AUTHORITY\NETWORK SERVICE';service_sid='S-1-5-20';execution_root=$execution;runtime_root=$runtime}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $runtime 'runtime.json') -NoNewline
   $migratedRoot=Join-Path $runnerRoot 'repo-12345';New-Item -ItemType Directory -Path (Join-Path $migratedRoot 'bin') -Force|Out-Null;New-Item -ItemType File -Path (Join-Path $migratedRoot '.runner') -Force|Out-Null;Set-Content -LiteralPath (Join-Path $migratedRoot '.service') -Value 'actions.runner.kusa07-example.codex-repo-12345' -NoNewline;Set-Content -LiteralPath (Join-Path $migratedRoot 'bin\RunnerService.exe') -Value fixture -NoNewline
-  $activeMetadata=Get-Phase12BRunnerMetadataPath -RuntimeRoot $runtime -RepositoryId 12345;if(Test-Path -LiteralPath $activeMetadata){Remove-Item -LiteralPath $activeMetadata -Force}
+  $activeMetadata=Get-Phase12BRunnerMetadataPath -RuntimeRoot $runtime -RepositoryId 12345;if(Test-Path -LiteralPath $activeMetadata){Remove-Item -LiteralPath $activeMetadata -Force};Write-Phase12BRunnerMetadata -RuntimeRoot $runtime -RepositoryId 12345 -RepositoryFullName 'kusa07/example' -RunnerRoot $runnerRoot -LifecycleState ACTIVE -ServiceName (Get-Phase12BExpectedServiceName $migratedRoot)|Out-Null
   $migrateLog=Join-Path $root 'migrate.log';& (Join-Path $PSScriptRoot 'migrate-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -AdapterLog $migrateLog -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null;$migratedMetadata=Read-Phase12BRunnerMetadata -RuntimeRoot $runtime -RepositoryId 12345 -RepositoryFullName kusa07/example -RunnerRoot $runnerRoot;if($migratedMetadata.lifecycle_state -ne 'ACTIVE'){throw 'migration did not route through canonical ACTIVE lifecycle'}
   $cfg=Read-Phase12BConfig (Join-Path $root 'environment.yaml')
   foreach($field in 'Provider','SecretVersions','Iam','WorkflowContent'){

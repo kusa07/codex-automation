@@ -32,9 +32,9 @@ function Test-Phase12BServicePath([string]$PathName,[string]$RunnerRoot) {
 }
 
 function Test-Phase12BTestAdapter {
-    param([switch]$TestMode,[string]$FixtureRoot,[string]$AdapterLog,[string]$ExternalReadbackFile,[string]$ServiceReadbackFile)
+    param([switch]$TestMode,[string]$FixtureRoot,[string]$AdapterLog,[string]$ExternalReadbackFile,[string]$ServiceReadbackFile,[string]$MigrationReadbackFile)
     if(-not [string]::IsNullOrWhiteSpace($env:PHASE12B_TEST_ADAPTER)){throw 'Environment-based test adapter activation is prohibited.'}
-    $testPaths=@($AdapterLog,$ExternalReadbackFile,$ServiceReadbackFile)|Where-Object{$_}
+    $testPaths=@(@($AdapterLog,$ExternalReadbackFile,$ServiceReadbackFile,$MigrationReadbackFile)|Where-Object{-not [string]::IsNullOrWhiteSpace([string]$_)})
     if(-not $TestMode){if($testPaths.Count -ne 0 -or $FixtureRoot){throw 'Test adapters require explicit TestMode and FixtureRoot.'};return}
     $root=Assert-Phase12BFixtureRoot $FixtureRoot
     $prefix=$root.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar
@@ -104,10 +104,19 @@ function Read-Phase12BConfig {
  if(-not(Test-Path -LiteralPath $PrivateConfig -PathType Leaf)){throw "Private configuration not found: $PrivateConfig"};$yq=Get-Command yq -ErrorAction SilentlyContinue;if($null -eq $yq){throw 'Required prerequisite not found: yq (mikefarah/yq v4).'};$version=(& $yq.Source --version 2>$null|Out-String).Trim();if(-not(Test-Phase12BYqV4Version $version)){throw "Unsupported yq version: $version"}
  function Y([string]$file,[string]$query,[bool]$required=$true){$v=(& $yq.Source -r $query $file 2>$null|Out-String).Trim();if($required -and([string]::IsNullOrWhiteSpace($v)-or $v -eq 'null')){throw "Missing configuration value: $query"};if($v -eq 'null'){$v=''};$v}
  if((Y $PrivateConfig '.schema_version') -ne '1'){throw 'Unsupported environment schema_version.'};$hostFile=Y $PrivateConfig '.host.config';if(-not[IO.Path]::IsPathRooted($hostFile)){$hostFile=Join-Path (Split-Path -Parent $PrivateConfig) $hostFile};if(-not(Test-Path -LiteralPath $hostFile -PathType Leaf)){throw "Host configuration not found: $hostFile"};if((Y $hostFile '.schema_version') -ne '1'){throw 'Unsupported host schema_version.'}
- $h=[ordered]@{};foreach($n in 'host_id','platform'){$h[$n]=Y $hostFile ".${n}"};foreach($n in 'execution_root','runner_root','runtime_root','profile_root'){$h[$n]=Y $hostFile ".paths.${n}";if(-not[IO.Path]::IsPathRooted($h[$n])){throw "Host path must be absolute: $n"}};$h.runner_mode=Y $hostFile '.runner.mode';$h.service_identity=Y $hostFile '.runner.service_identity';$h.service_sid=Y $hostFile '.runner.service_sid';$h.serialization=Y $hostFile '.execution.serialization';$h.runner_package_path=Y $hostFile '.runner.package_path' $false;if(-not $h.runner_package_path){$h.runner_package_path=Join-Path $h.runtime_root 'packages\actions-runner-win-x64.zip'};if(-not[IO.Path]::IsPathRooted($h.runner_package_path)){throw 'Runner package path must be absolute.'};$h.labels=@((& $yq.Source -r '.runner.labels[]' $hostFile 2>$null)|ForEach-Object{$_.Trim()}|Where-Object{$_});$requiredLabels=@('self-hosted','Windows','X64','codex-automation');if($h.platform -ne 'windows' -or $h.runner_mode -ne 'windows-service' -or $h.service_identity -ne 'network-service' -or $h.service_sid -ne 'S-1-5-20' -or $h.serialization -ne 'global-mutex' -or @(Compare-Object ($requiredLabels|Sort-Object) ($h.labels|Sort-Object -Unique)).Count -ne 0){throw 'Host desired state violates the Phase 12B policy.'}
+ $h=[ordered]@{};foreach($n in 'host_id','platform'){$h[$n]=Y $hostFile ".${n}"};if($h.host_id -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$'){throw 'Host ID is invalid.'};foreach($n in 'execution_root','runner_root','runtime_root','profile_root'){$h[$n]=Y $hostFile ".paths.${n}";if(-not[IO.Path]::IsPathRooted($h[$n])){throw "Host path must be absolute: $n"}};$h.runner_mode=Y $hostFile '.runner.mode';$h.service_identity=Y $hostFile '.runner.service_identity';$h.service_sid=Y $hostFile '.runner.service_sid';$h.serialization=Y $hostFile '.execution.serialization';$h.quiescence_timeout_seconds=Y $hostFile '.execution.quiescence_timeout_seconds' $false;if(-not $h.quiescence_timeout_seconds){$h.quiescence_timeout_seconds=600};if([string]$h.quiescence_timeout_seconds -notmatch '^[1-9][0-9]*$'){throw 'Invalid host quiescence timeout.'};$h.runner_package_path=Y $hostFile '.runner.package_path' $false;if(-not $h.runner_package_path){$h.runner_package_path=Join-Path $h.runtime_root 'packages\actions-runner-win-x64.zip'};if(-not[IO.Path]::IsPathRooted($h.runner_package_path)){throw 'Runner package path must be absolute.'};$h.labels=@((& $yq.Source -r '.runner.labels[]' $hostFile 2>$null)|ForEach-Object{$_.Trim()}|Where-Object{$_});$requiredLabels=@('self-hosted','Windows','X64','codex-automation');if($h.platform -ne 'windows' -or $h.runner_mode -ne 'windows-service' -or $h.service_identity -ne 'network-service' -or $h.service_sid -ne 'S-1-5-20' -or $h.serialization -ne 'global-mutex' -or @(Compare-Object ($requiredLabels|Sort-Object) ($h.labels|Sort-Object -Unique)).Count -ne 0){throw 'Host desired state violates the Phase 12B policy.'}
  $e=[ordered]@{github_owner_id=Y $PrivateConfig '.github.owner_id';project_id=Y $PrivateConfig '.google_cloud.project_id';provider_resource=Y $PrivateConfig '.google_cloud.workload_identity_provider_resource';automation_repository=Y $PrivateConfig '.automation.repository';automation_workflow_path=Y $PrivateConfig '.automation.workflow_path';active_workflow_sha=Y $PrivateConfig '.automation.active_workflow_sha'};if($e.github_owner_id -notmatch '^[1-9][0-9]*$' -or $e.project_id -notmatch '^[a-z][a-z0-9-]{4,28}[a-z0-9]$' -or $e.provider_resource -notmatch '^projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+/providers/[a-z0-9-]+$' -or $e.automation_repository -notmatch '^[^/]+/[^/]+$' -or $e.automation_workflow_path -notmatch '^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$' -or $e.active_workflow_sha -notmatch '^[0-9a-f]{40}$'){throw 'Environment desired state is invalid.'}
- $callerDir=Join-Path (Split-Path -Parent $PrivateConfig) 'callers';$callers=@();if(Test-Path -LiteralPath $callerDir -PathType Container){foreach($f in Get-ChildItem -LiteralPath $callerDir -Filter '*.yaml' -File){$callers += [pscustomobject]@{Path=$f.FullName;Repository=Y $f.FullName '.repository.full_name';RepositoryId=Y $f.FullName '.repository.id';SecretId=Y $f.FullName '.secret.id';WorkflowPath=Y $f.FullName '.workflow.path';Enabled=Y $f.FullName '.runner.enabled';Scope=Y $f.FullName '.runner.scope'}}};if($callers.Count -eq 0){throw 'No caller desired state found.'};foreach($c in $callers){if($c.Repository -notmatch '^[^/]+/[^/]+$' -or $c.RepositoryId -notmatch '^[1-9][0-9]*$' -or $c.SecretId -notmatch '^[A-Za-z][A-Za-z0-9_-]{0,254}$' -or $c.WorkflowPath -notmatch '^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$' -or $c.Enabled -ne 'true' -or $c.Scope -ne 'repository'){throw "Invalid caller desired state: $($c.Path)"}}
- [pscustomobject]@{Environment=$PrivateConfig;HostFile=$hostFile;Host=$h;EnvironmentData=[pscustomobject]$e;Callers=$callers}
+ $configRoot=Split-Path -Parent $PrivateConfig
+ $callerDir=Join-Path $configRoot 'callers';$callers=@();if(Test-Path -LiteralPath $callerDir -PathType Container){foreach($f in Get-ChildItem -LiteralPath $callerDir -Filter '*.yaml' -File){$callers += [pscustomobject]@{Name=$f.BaseName;Path=$f.FullName;Repository=Y $f.FullName '.repository.full_name';RepositoryId=Y $f.FullName '.repository.id';SecretId=Y $f.FullName '.secret.id';WorkflowPath=Y $f.FullName '.workflow.path';Enabled=Y $f.FullName '.runner.enabled';Scope=Y $f.FullName '.runner.scope'}}};if($callers.Count -eq 0){throw 'No caller desired state found.'};foreach($c in $callers){if($c.Name -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$' -or $c.Repository -notmatch '^[^/]+/[^/]+$' -or $c.RepositoryId -notmatch '^[1-9][0-9]*$' -or $c.SecretId -notmatch '^[A-Za-z][A-Za-z0-9_-]{0,254}$' -or $c.WorkflowPath -notmatch '^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$' -or $c.Enabled -ne 'true' -or $c.Scope -ne 'repository'){throw "Invalid caller desired state: $($c.Path)"}}
+ $migrationFile=Join-Path $configRoot ("migrations\{0}.yaml" -f $h.host_id);$migration=$null
+ if(Test-Path -LiteralPath $migrationFile){
+  $migrationItem=Get-Item -LiteralPath $migrationFile -Force -ErrorAction Stop
+  if(-not(Test-Path -LiteralPath $migrationFile -PathType Leaf) -or -not[string]::IsNullOrWhiteSpace([string]$migrationItem.LinkType) -or -not[string]::IsNullOrWhiteSpace([string]$migrationItem.Target)){throw 'Migration desired-state path is unsafe.'}
+  $migration=[pscustomobject]@{Path=[IO.Path]::GetFullPath($migrationFile);SchemaVersion=Y $migrationFile '.schema_version';HostId=Y $migrationFile '.host_id';MigrationType=Y $migrationFile '.migration_type';SourceCaller=Y $migrationFile '.source.caller';SourceRunnerDirectory=Y $migrationFile '.source.runner_directory';PackageVersion=Y $migrationFile '.package.version';PackageSha256=Y $migrationFile '.package.sha256'}
+  if($migration.SchemaVersion -cne '1' -or $migration.HostId -cne $h.host_id -or $migration.MigrationType -cne 'phase10-interactive' -or $migration.SourceCaller -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$' -or -not[IO.Path]::IsPathRooted($migration.SourceRunnerDirectory) -or $migration.PackageVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or $migration.PackageSha256 -notmatch '^[0-9a-f]{64}$'){throw 'Migration desired state is invalid.'}
+  if(@($callers|Where-Object{$_.Name -ceq $migration.SourceCaller}).Count -ne 1){throw 'Migration source caller is missing or ambiguous.'}
+ }
+ [pscustomobject]@{Environment=$PrivateConfig;HostFile=$hostFile;Host=$h;EnvironmentData=[pscustomobject]$e;Callers=$callers;MigrationFile=if($migration){$migration.Path}else{$migrationFile};Migration=$migration}
 }
 
 function Get-Phase12BExternalCallerState {
@@ -119,14 +128,13 @@ function Get-Phase12BExternalCallerState {
  try {
    $repo=Read-Json { & $gh.Source api "repos/$($Caller.Repository)" } 'GitHub repository metadata'
    $branch=[string]$repo.default_branch;if([string]::IsNullOrWhiteSpace($branch) -or $branch -notmatch '^[A-Za-z0-9._/-]+$'){throw 'GitHub default branch metadata is invalid.'}
-   $runners=Read-Json { & $gh.Source api "repos/$($Caller.Repository)/actions/runners?per_page=100" } 'GitHub repository runner metadata'
-   if([int]$runners.total_count -gt 100){throw 'Runner read-back is incomplete; pagination is required.'}
+   $runnerListing=Get-Phase12BGitHubRunnerList -Repository $Caller.Repository -GhPath $gh.Source
    $workflow=Read-Json { & $gh.Source api ("repos/{0}/contents/{1}?ref={2}" -f $Caller.Repository,$Caller.WorkflowPath,[uri]::EscapeDataString($branch)) } 'GitHub caller workflow'
    $versions=Read-Json { & $gcloud.Source secrets versions list $Caller.SecretId --project=$Config.EnvironmentData.project_id --format=json } 'Secret metadata'
    $iam=Read-Json { & $gcloud.Source secrets get-iam-policy $Caller.SecretId --project=$Config.EnvironmentData.project_id --format=json } 'Secret IAM metadata'
    $p=$Config.EnvironmentData.provider_resource -split '/';if($p.Count -ne 8){throw 'Invalid WIF Provider resource path.'}
    $provider=Read-Json { & $gcloud.Source iam workload-identity-pools providers describe $p[7] --project=$Config.EnvironmentData.project_id --location=global --workload-identity-pool=$p[5] --format=json } 'WIF Provider metadata'
-   [pscustomobject]@{RepositoryId=[string]$repo.id;DefaultBranch=$branch;WorkflowBranch=$branch;Runners=@($runners.runners);SecretVersions=@($versions);Iam=$iam;Provider=$provider;WorkflowContent=[string]$workflow.content}
+   [pscustomobject]@{RepositoryId=[string]$repo.id;DefaultBranch=$branch;WorkflowBranch=$branch;Runners=@($runnerListing.Runners);SecretVersions=@($versions);Iam=$iam;Provider=$provider;WorkflowContent=[string]$workflow.content}
  } catch { throw "External metadata read-back failed: $($_.Exception.Message)" }
 }
 function Test-Phase12BExternalCallerState {
@@ -530,12 +538,47 @@ function Wait-Phase12BCallerQuiescence {
     }
 }
 
+function Get-Phase12BFixedRunnerAdapterArguments {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][ValidateSet('InstallPackage','Register','InstallService','StartService','StopService','Unregister','RemoveService','MigrateRunner','Verify')][string]$Action,
+        [Parameter(Mandatory)]$Host,[Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$RepositoryFullName,[Parameter(Mandatory)][string]$RepositoryId
+    )
+    Assert-Phase12BRepositoryIdentity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
+    $arguments=@{Action=$Action;RunnerRoot=$Identity.RunnerDirectory;Repository=$RepositoryFullName;RepositoryId=$RepositoryId;ServiceName=$Identity.ServiceName;ServiceIdentity=$script:Phase12BServiceIdentity}
+    if($Action -eq 'InstallPackage'){
+        if([string]::IsNullOrWhiteSpace([string]$Host.HostId) -or [string]::IsNullOrWhiteSpace([string]$Host.RunnerRoot) -or [string]::IsNullOrWhiteSpace([string]$Host.RunnerPackagePath)){throw 'Fresh onboarding package authority is incomplete.'}
+        $canonical=Get-Phase12BCallerRunnerIdentity -RunnerRoot ([string]$Host.RunnerRoot) -RepositoryId $RepositoryId
+        if([IO.Path]::GetFullPath([string]$Identity.RunnerDirectory) -ine [IO.Path]::GetFullPath([string]$canonical.RunnerDirectory)){throw 'Fresh onboarding target runner directory contradicts host desired state.'}
+        $arguments.RunnerPackagePath=[string]$Host.RunnerPackagePath
+        $arguments.HostRunnerRoot=[string]$Host.RunnerRoot
+        $arguments.OperationId=Get-Phase12BOnboardPackageOperationId -HostId ([string]$Host.HostId) -RepositoryId $RepositoryId
+    }
+    $arguments
+}
+
 function Invoke-Phase12BFixedRunnerAdapter {
     param([Parameter(Mandatory)][string]$Action,[Parameter(Mandatory)]$Host,[Parameter(Mandatory)]$Identity,[Parameter(Mandatory)][string]$RepositoryFullName,[Parameter(Mandatory)][string]$RepositoryId)
     $adapter=Join-Path $PSScriptRoot 'runner-adapter.ps1'
-    $arguments=@{Action=$Action;RunnerRoot=$Identity.RunnerDirectory;Repository=$RepositoryFullName;RepositoryId=$RepositoryId;ServiceName=$Identity.ServiceName;ServiceIdentity=$script:Phase12BServiceIdentity}
-    if($Action -eq 'InstallPackage'){$arguments.RunnerPackagePath=$Host.RunnerPackagePath}
+    $arguments=Get-Phase12BFixedRunnerAdapterArguments -Action $Action -Host $Host -Identity $Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
     & $adapter @arguments | Out-Null
+}
+
+function Invoke-Phase12BInstallPackage {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)]$Host,[Parameter(Mandatory)]$Identity,
+        [Parameter(Mandatory)][string]$RepositoryFullName,[Parameter(Mandatory)][string]$RepositoryId,
+        [switch]$TestMode
+    )
+    $arguments=Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host $Host -Identity $Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
+    if($TestMode){
+        # TestMode substitutes only the external ACL mutation provider. The
+        # package contract, staging, validation, and atomic publication remain
+        # the same production primitives and arguments.
+        return Install-Phase12BRunnerPackageAtomically -RunnerRoot $arguments.HostRunnerRoot -TargetRunnerDirectory $arguments.RunnerRoot -OperationId $arguments.OperationId -PackagePath $arguments.RunnerPackagePath -ApplyAcl {}
+    }
+    Invoke-Phase12BFixedRunnerAdapter -Action InstallPackage -Host $Host -Identity $Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId
+    [pscustomobject]@{State='PUBLISHED'}
 }
 
 function Get-Phase12BCallerRunnerObservation {
@@ -567,7 +610,7 @@ function Get-Phase12BCallerRunnerObservation {
         try { $repoRaw=& $gh.Source api "repos/$RepositoryFullName" 2>$null;if($LASTEXITCODE -ne 0){throw 'repository query failed'};$repo=$repoRaw|ConvertFrom-Json -ErrorAction Stop } catch { throw "GitHub repository read-back failed: $($_.Exception.Message)" }
         $actualRepositoryId=[string]$repo.id
         $actualRepositoryFullName=[string]$repo.full_name
-        try { $runnerRaw=& $gh.Source api "repos/$RepositoryFullName/actions/runners?per_page=100" 2>$null;if($LASTEXITCODE -ne 0){throw 'runner query failed'};$runnerResponse=$runnerRaw|ConvertFrom-Json -ErrorAction Stop;if([int]$runnerResponse.total_count -gt 100){throw 'runner pagination is incomplete'};$runnerRecords=@($runnerResponse.runners) } catch { throw "GitHub runner read-back failed: $($_.Exception.Message)" }
+        try { $runnerResponse=Get-Phase12BGitHubRunnerList -Repository $RepositoryFullName -GhPath $gh.Source;$runnerRecords=@($runnerResponse.Runners) } catch { throw "GitHub runner read-back failed: $($_.Exception.Message)" }
         $localPresent=Test-Path -LiteralPath $identity.RunnerDirectory -PathType Container
         try { $serviceRecords=@(Get-CimInstance Win32_Service -ErrorAction Stop) } catch { throw "Windows Service read-back failed: $($_.Exception.Message)" }
         $fixture=$null
@@ -696,8 +739,7 @@ function Invoke-Phase12BCallerRunner {
                 if($resumeState -in @('ABSENT','REGISTERING')){
                     if($before -eq 'RETIRED'){$retired=Get-Phase12BRunnerMetadataPath -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -State retired;if(Test-Path -LiteralPath $retired){Remove-Item -LiteralPath $retired -Force}}
                     Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState REGISTERING -ServiceName ''|Out-Null
-                    if(-not(Test-Path -LiteralPath $identity.RunnerDirectory -PathType Container)){New-Item -ItemType Directory -Path $identity.RunnerDirectory|Out-Null}
-                    if(-not(Test-Path -LiteralPath (Join-Path $identity.RunnerDirectory 'config.cmd') -PathType Leaf)){Invoke-Phase12BFixedRunnerAdapter -Action InstallPackage -Host $host -Identity $identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId}
+                    Invoke-Phase12BInstallPackage -Host $host -Identity $identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId | Out-Null
                     $resumeState='REGISTERING'
                 }
                 if($resumeState -in @('REGISTERING','REGISTERED','SERVICE_INSTALLING','SERVICE_INSTALLED')){
@@ -772,7 +814,13 @@ function Invoke-Phase12BCallerRunner {
             if($before -eq 'RETIRED'){$retired=Get-Phase12BRunnerMetadataPath -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -State retired;if(Test-Path -LiteralPath $retired){Remove-Item -LiteralPath $retired -Force}}
             $testServiceName="actions.runner.$($RepositoryFullName -replace '/','-').$($observation.Identity.RunnerName)"
             $resumeState=if($before -eq 'RETIRED'){'ABSENT'}else{$before}
-            if($resumeState -in @('ABSENT','REGISTERING')){Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState REGISTERING -ServiceName ''|Out-Null;$fixture.local_present=$true;New-Item -ItemType Directory -Path (Join-Path $observation.Identity.RunnerDirectory 'bin') -Force|Out-Null;Set-Content -LiteralPath (Join-Path $observation.Identity.RunnerDirectory 'config.cmd') -Value '@echo off' -NoNewline;Set-Content -LiteralPath (Join-Path $observation.Identity.RunnerDirectory 'bin\RunnerService.exe') -Value 'fixture' -NoNewline;$resumeState='REGISTERING'}
+            if($resumeState -in @('ABSENT','REGISTERING')){
+                Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState REGISTERING -ServiceName ''|Out-Null
+                $packageResult=Invoke-Phase12BInstallPackage -Host $host -Identity $observation.Identity -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId -TestMode
+                if($packageResult.State -notin @('PUBLISHED','ALREADY_PUBLISHED')){throw "Test package publication did not complete: $($packageResult.State)"}
+                $fixture.local_present=$true
+                $resumeState='REGISTERING'
+            }
             if($resumeState -in @('REGISTERING','REGISTERED','SERVICE_INSTALLING')){$fixture.runners=@([pscustomobject]@{name=$observation.Identity.RunnerName;labels=@($host.Labels|ForEach-Object{[pscustomobject]@{name=$_}})});Set-Content -LiteralPath (Join-Path $observation.Identity.RunnerDirectory '.service') -Value $testServiceName -NoNewline;$fixture.services=@([pscustomobject]@{Name=$testServiceName;PathName=('"{0}"' -f (Join-Path $observation.Identity.RunnerDirectory 'bin\RunnerService.exe'));StartName='NT AUTHORITY\NETWORK SERVICE';State='Running'});Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState SERVICE_INSTALLING -ServiceName $testServiceName|Out-Null;Write-Phase12BRunnerMetadata -RuntimeRoot $host.RuntimeRoot -RepositoryId $RepositoryId -RepositoryFullName $RepositoryFullName -RunnerRoot $host.RunnerRoot -LifecycleState SERVICE_INSTALLED -ServiceName $testServiceName|Out-Null;$resumeState='SERVICE_INSTALLED'}
             Write-Phase12BCallerRunnerFixture -FixtureRoot $FixtureRoot -Fixture $fixture
             $transition=Invoke-Phase12BServiceInstalledToActive -Host $host -RepositoryFullName $RepositoryFullName -RepositoryId $RepositoryId -TestMode -FixtureRoot $FixtureRoot
@@ -802,4 +850,443 @@ function Invoke-Phase12BCallerRunner {
     [pscustomobject]@{Action=$Action;Result='PASS';RepositoryId=$RepositoryId;HostState=$hostState;Snapshot=$classification.Snapshot;LifecycleBefore=$before;LifecycleAfter=$after;Recovery=$classification.Recovery;Identity=$observation.Identity;ServiceState='FIXTURE';StateEnteredAt=[string]$finalMetadata.state_entered_at;Mutations='TEST_FIXTURE_ONLY';Postcondition=if($after -eq 'RUNNER_REMOVED'){'RUNNER_AND_SERVICE_ABSENT_AWAITING_CLOUD_RETIREMENT'}else{'EXACT_LIFECYCLE_TOPOLOGY'};ReconstructRuntimeMetadata=$false;NextAction=if($after -eq 'RUNNER_REMOVED'){'FINALIZE_CLOUD_AND_DESIRED_STATE'}else{'VERIFY'}}
 }
 
-Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner
+$script:Phase12BMigrationStages=@(
+    'LEGACY_VERIFIED','DISPATCH_FENCING','DISPATCH_FENCED','QUIESCENT','TARGET_HOST_PREPARED',
+    'LEGACY_RUNNER_UNREGISTERING','LEGACY_RUNNER_UNREGISTERED',
+    'TARGET_RUNNER_REGISTERING','TARGET_RUNNER_REGISTERED',
+    'SERVICE_INSTALLING','SERVICE_INSTALLED','SERVICE_RUNNING',
+    'ACTIVE_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','MIGRATION_COMPLETE'
+)
+function Get-Phase12BRunnerPackageContract {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$Sha256
+    )
+    if($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$'){throw 'Runner package version must be an exact semantic version.'}
+    if($Sha256 -notmatch '^[0-9a-f]{64}$'){throw 'Runner package SHA-256 must be 64 lowercase hexadecimal characters.'}
+    $archive="actions-runner-win-x64-$Version.zip"
+    [pscustomobject]@{
+        Version=$Version
+        ArchiveName=$archive
+        Uri="https://github.com/actions/runner/releases/download/v$Version/$archive"
+        ReleaseApiPath="repos/actions/runner/releases/tags/v$Version"
+        ExpectedAssetDigest="sha256:$Sha256"
+        Sha256=$Sha256
+    }
+}
+
+function Get-Phase12BOnboardPackageOperationId {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$HostId,
+        [Parameter(Mandatory)][string]$RepositoryId
+    )
+    if($HostId -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$'){throw 'Invalid host identity for onboarding package operation.'}
+    if($RepositoryId -notmatch '^[1-9][0-9]*$'){throw 'Invalid immutable repository ID for onboarding package operation.'}
+    $material=[Text.Encoding]::UTF8.GetBytes("phase12b-onboard-package-v1`0$HostId`0$RepositoryId")
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try{$hash=$sha.ComputeHash($material)}finally{$sha.Dispose()}
+    $guidBytes=[byte[]]::new(16)
+    [Array]::Copy($hash,$guidBytes,16)
+    [guid]::new($guidBytes).ToString('D')
+}
+
+function Test-Phase12BRunnerPackage {
+    [CmdletBinding()]param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$ExpectedSha256)
+    Test-Phase12BFileSha256 -Path $Path -ExpectedSha256 $ExpectedSha256
+}
+
+function Test-Phase12BRunnerReleaseAsset {
+    [CmdletBinding()]param([Parameter(Mandatory)]$Contract,[Parameter(Mandatory)]$Release)
+    if([string]$Release.tag_name -cne "v$($Contract.Version)" -or $null -eq $Release.PSObject.Properties['assets']){return $false}
+    $assets=@($Release.assets|Where-Object{[string]$_.name -ceq [string]$Contract.ArchiveName})
+    if($assets.Count -ne 1){return $false}
+    $asset=$assets[0]
+    [string]$asset.browser_download_url -ceq [string]$Contract.Uri -and
+        [string]$asset.digest -ceq [string]$Contract.ExpectedAssetDigest -and
+        [string]$asset.state -ceq 'uploaded'
+}
+
+function Get-Phase12BCompleteRunnerList {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][scriptblock]$FetchPages,
+        [ValidateRange(1,100)][int]$PageSize=100,
+        [ValidateRange(1,100)][int]$MaxPages=100
+    )
+    try{$pages=@(& $FetchPages)}catch{throw 'GitHub runner pagination read-back failed.'}
+    if($pages.Count -eq 0 -or $pages.Count -gt $MaxPages){throw 'GitHub runner pagination is incomplete or exceeds the safety limit.'}
+    $totalCount=-1
+    foreach($page in $pages){
+        if($null -eq $page -or $null -eq $page.PSObject.Properties['total_count'] -or $null -eq $page.PSObject.Properties['runners']){throw 'GitHub runner page is malformed.'}
+        $parsed=0
+        if(-not[int]::TryParse([string]$page.total_count,[ref]$parsed) -or $parsed -lt 0){throw 'GitHub runner total_count is malformed.'}
+        if($totalCount -lt 0){$totalCount=$parsed}elseif($totalCount -ne $parsed){throw 'GitHub runner total_count changed during pagination.'}
+    }
+    $expectedPages=[Math]::Max(1,[int][Math]::Ceiling($totalCount/[double]$PageSize))
+    if($expectedPages -gt $MaxPages -or $pages.Count -ne $expectedPages){throw 'GitHub runner page count does not match total_count.'}
+    $runners=[Collections.Generic.List[object]]::new()
+    $ids=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    for($index=0;$index -lt $pages.Count;$index++){
+        $pageRunners=@($pages[$index].runners)
+        $expectedCount=if($index -lt ($expectedPages-1)){$PageSize}else{$totalCount-($PageSize*$index)}
+        if($pageRunners.Count -ne $expectedCount){throw 'GitHub runner page is truncated or over-complete.'}
+        foreach($runner in $pageRunners){
+            $id=if($runner -and $runner.PSObject.Properties['id']){[string]$runner.id}else{''}
+            $name=if($runner -and $runner.PSObject.Properties['name']){[string]$runner.name}else{''}
+            if($id -notmatch '^[1-9][0-9]*$' -or $name -notmatch '^[A-Za-z0-9_.-]+$'){throw 'GitHub runner identity is malformed.'}
+            if(-not $ids.Add($id)){throw 'GitHub runner pagination returned a duplicate runner ID.'}
+            [void]$runners.Add($runner)
+        }
+    }
+    if($runners.Count -ne $totalCount){throw 'GitHub runner fetched count does not match total_count.'}
+    [pscustomobject]@{TotalCount=$totalCount;PageCount=$pages.Count;Runners=$runners.ToArray()}
+}
+
+function Get-Phase12BGitHubRunnerList {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$Repository,
+        [string]$GhPath
+    )
+    if($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'){throw 'Invalid repository identity for runner read-back.'}
+    if([string]::IsNullOrWhiteSpace($GhPath)){$GhPath=(Get-Command gh -ErrorAction Stop).Source}
+    Get-Phase12BCompleteRunnerList -FetchPages {
+        $raw=& $GhPath api --paginate --slurp "repos/$Repository/actions/runners?per_page=100" 2>$null
+        if($LASTEXITCODE -ne 0){throw 'GitHub runner pagination failed.'}
+        try{@(($raw|Out-String|ConvertFrom-Json -ErrorAction Stop))}catch{throw 'GitHub runner pagination returned malformed JSON.'}
+    }
+}
+
+function Test-Phase12BRunnerPackageTree {
+    [CmdletBinding()]param([Parameter(Mandatory)][string]$Root)
+    if(-not(Test-Path -LiteralPath $Root -PathType Container) -or -not(Test-Phase12BNoReparse $Root)){return $false}
+    foreach($relative in @('config.cmd','run.cmd','bin\Runner.Listener.exe','bin\RunnerService.exe')){
+        $path=Join-Path $Root $relative
+        if(-not(Test-Path -LiteralPath $path -PathType Leaf) -or -not(Test-Phase12BNoReparse $path)){return $false}
+    }
+    $true
+}
+
+function Assert-Phase12BRunnerStagingAuthority {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$RunnerRoot,
+        [Parameter(Mandatory)][string]$OperationId
+    )
+    $operationGuid=[guid]::Empty
+    if(-not[guid]::TryParseExact($OperationId,'D',[ref]$operationGuid)){throw 'Migration operation ID is invalid.'}
+    if(-not(Test-Path -LiteralPath $RunnerRoot)){return}
+    $root=[IO.Path]::GetFullPath($RunnerRoot)
+    if(-not(Test-Path -LiteralPath $root -PathType Container) -or -not(Test-Phase12BNoReparse $root)){throw 'Runner root is missing or unsafe.'}
+    $stagingRoot=Join-Path $root '.migration-staging'
+    if(-not(Test-Path -LiteralPath $stagingRoot)){return}
+    if(-not(Test-Path -LiteralPath $stagingRoot -PathType Container) -or -not(Test-Phase12BNoReparse $stagingRoot)){throw 'Runner package staging root is unsafe.'}
+    $unexpected=@(Get-ChildItem -LiteralPath $stagingRoot -Force|Where-Object{$_.Name -cne $OperationId})
+    if($unexpected.Count -ne 0){throw 'Unknown runner package staging state requires operator review.'}
+    $operationRoot=Join-Path $stagingRoot $OperationId
+    if(Test-Path -LiteralPath $operationRoot){
+        if(-not(Test-Path -LiteralPath $operationRoot -PathType Container) -or -not(Test-Phase12BNoReparse $operationRoot)){throw 'Current migration staging is unsafe.'}
+        $entries=@(Get-ChildItem -LiteralPath $operationRoot -Force)
+        if(@($entries|Where-Object{$_.Name -cne 'runner'}).Count -ne 0){throw 'Current migration staging contains unknown content.'}
+        $stagingRunner=Join-Path $operationRoot 'runner'
+        if(Test-Path -LiteralPath $stagingRunner){
+            if(-not(Test-Path -LiteralPath $stagingRunner -PathType Container) -or -not(Test-Phase12BNoReparse $stagingRunner)){throw 'Current runner package staging tree is unsafe.'}
+        }
+    }
+}
+
+function Install-Phase12BRunnerPackageAtomically {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$RunnerRoot,
+        [Parameter(Mandatory)][string]$TargetRunnerDirectory,
+        [Parameter(Mandatory)][string]$OperationId,
+        [Parameter(Mandatory)][string]$PackagePath,
+        [scriptblock]$ApplyAcl
+    )
+    Assert-Phase12BRunnerStagingAuthority -RunnerRoot $RunnerRoot -OperationId $OperationId
+    $root=[IO.Path]::GetFullPath($RunnerRoot);$target=[IO.Path]::GetFullPath($TargetRunnerDirectory)
+    if(-not(Test-Path -LiteralPath $root -PathType Container) -or -not(Test-Phase12BNoReparse $root)){throw 'Runner root is missing or unsafe.'}
+    if([IO.Path]::GetFullPath((Split-Path -Parent $target)) -ine $root){throw 'Target runner directory must be a direct child of the canonical runner root.'}
+    if(-not(Test-Path -LiteralPath $PackagePath -PathType Leaf) -or -not(Test-Phase12BNoReparse $PackagePath)){throw 'Runner package path is missing or unsafe.'}
+    $stagingRoot=Join-Path $root '.migration-staging';$operationRoot=Join-Path $stagingRoot $OperationId;$stagingRunner=Join-Path $operationRoot 'runner'
+    if(Test-Path -LiteralPath $target){
+        if(-not(Test-Phase12BRunnerPackageTree $target)){throw 'Final runner root is partial or unexpected.'}
+        if(Test-Path -LiteralPath $operationRoot){
+            if(-not(Test-Phase12BNoReparse $operationRoot) -or @(Get-ChildItem -LiteralPath $operationRoot -Force).Count -ne 0){throw 'Published runner root conflicts with current migration staging.'}
+            Remove-Item -LiteralPath $operationRoot -Force
+        }
+        if($ApplyAcl){& $ApplyAcl $target}
+        return [pscustomobject]@{State='ALREADY_PUBLISHED';Target=$target;Staging=$stagingRunner}
+    }
+    if(Test-Path -LiteralPath $operationRoot){
+        if(-not(Test-Phase12BNoReparse $operationRoot)){throw 'Current migration staging is unsafe.'}
+        $entries=@(Get-ChildItem -LiteralPath $operationRoot -Force)
+        if(@($entries|Where-Object{$_.Name -cne 'runner'}).Count -ne 0){throw 'Current migration staging contains unknown content.'}
+        if(Test-Path -LiteralPath $stagingRunner){
+            if(-not(Test-Phase12BRunnerPackageTree $stagingRunner)){
+                $resolvedOperation=[IO.Path]::GetFullPath($operationRoot);$resolvedStaging=[IO.Path]::GetFullPath($stagingRoot)+[IO.Path]::DirectorySeparatorChar
+                if(-not $resolvedOperation.StartsWith($resolvedStaging,[StringComparison]::OrdinalIgnoreCase)){throw 'Refusing unsafe staging cleanup.'}
+                Remove-Item -LiteralPath $operationRoot -Recurse -Force
+            }
+        }
+    }
+    if(-not(Test-Path -LiteralPath $stagingRunner -PathType Container)){
+        New-Item -ItemType Directory -Path $stagingRunner -Force|Out-Null
+        if($ApplyAcl){foreach($path in @($stagingRoot,$operationRoot,$stagingRunner)){& $ApplyAcl $path}}
+        Expand-Archive -LiteralPath $PackagePath -DestinationPath $stagingRunner -ErrorAction Stop
+    }
+    if(-not(Test-Phase12BRunnerPackageTree $stagingRunner)){throw 'Extracted runner package tree is incomplete.'}
+    if(Test-Path -LiteralPath $target){throw 'Final runner root appeared before atomic publication.'}
+    [IO.Directory]::Move($stagingRunner,$target)
+    if(-not(Test-Phase12BRunnerPackageTree $target)){throw 'Published runner root failed read-back.'}
+    if($ApplyAcl){& $ApplyAcl $target}
+    if(Test-Path -LiteralPath $operationRoot){
+        if(@(Get-ChildItem -LiteralPath $operationRoot -Force).Count -ne 0){throw 'Migration staging was not empty after publication.'}
+        Remove-Item -LiteralPath $operationRoot -Force
+    }
+    [pscustomobject]@{State='PUBLISHED';Target=$target;Staging=$stagingRunner}
+}
+
+function Get-Phase12BMigrationRepositoryIdentityMatch {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$IntentRepositoryId,
+        [Parameter(Mandatory)][string]$IntentRepositoryFullName,
+        [Parameter(Mandatory)][string]$CallerRepositoryId,
+        [Parameter(Mandatory)][string]$CallerRepositoryFullName,
+        [AllowEmptyString()][string]$ActualRepositoryId,
+        [AllowEmptyString()][string]$ActualRepositoryFullName,
+        [Parameter(Mandatory)][bool]$ReadSucceeded
+    )
+    $idPattern='^[1-9][0-9]*$'
+    $namePattern='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+    $intentValid=$IntentRepositoryId -match $idPattern -and $IntentRepositoryFullName -match $namePattern
+    $callerValid=$CallerRepositoryId -match $idPattern -and $CallerRepositoryFullName -match $namePattern
+    $actualValid=$ReadSucceeded -and $ActualRepositoryId -match $idPattern -and $ActualRepositoryFullName -match $namePattern
+    $unknownState=-not $ReadSucceeded -or -not $actualValid
+    $identityConflict=-not($intentValid -and $callerValid) -or (
+        $actualValid -and -not(
+            $IntentRepositoryId -ceq $CallerRepositoryId -and
+            $CallerRepositoryId -ceq $ActualRepositoryId -and
+            $IntentRepositoryFullName -ceq $CallerRepositoryFullName -and
+            $CallerRepositoryFullName -ceq $ActualRepositoryFullName
+        )
+    )
+    [pscustomobject]@{
+        Exact=(-not $unknownState -and -not $identityConflict)
+        IdentityConflict=$identityConflict
+        UnknownState=$unknownState
+        ActualRepositoryId=$ActualRepositoryId
+        ActualRepositoryFullName=$ActualRepositoryFullName
+    }
+}
+
+function Get-Phase12BLegacyRunnerIdentityMatch {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)]$LocalRunner,
+        [Parameter(Mandatory)][string]$CallerRepository,
+        [Parameter(Mandatory)][string]$CallerRepositoryId,
+        [Parameter(Mandatory)][string]$ActualRepositoryId,
+        [AllowEmptyString()][string]$ActualRepositoryFullName,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$GitHubRunners,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedLabels
+    )
+    $agentId=if($LocalRunner.PSObject.Properties['agentId']){[string]$LocalRunner.agentId}else{''}
+    $agentName=if($LocalRunner.PSObject.Properties['agentName']){[string]$LocalRunner.agentName}else{''}
+    $repositoryUrl=if($LocalRunner.PSObject.Properties['gitHubUrl']){[string]$LocalRunner.gitHubUrl}else{''}
+    $idValid=$agentId -match '^[1-9][0-9]*$';$nameValid=$agentName -match '^[A-Za-z0-9_.-]+$'
+    $localRepositoryExact=$repositoryUrl.TrimEnd('/') -ieq "https://github.com/$CallerRepository"
+    $repositoryExact=$CallerRepositoryId -match '^[1-9][0-9]*$' -and $ActualRepositoryId -ceq $CallerRepositoryId -and $ActualRepositoryFullName -ceq $CallerRepository
+    $both=@($GitHubRunners|Where-Object{[string]$_.id -ceq $agentId -and [string]$_.name -ceq $agentName})
+    $byId=@($GitHubRunners|Where-Object{[string]$_.id -ceq $agentId})
+    $byName=@($GitHubRunners|Where-Object{[string]$_.name -ceq $agentName})
+    $labels=if($both.Count -eq 1 -and $both[0].PSObject.Properties['labels']){@($both[0].labels|ForEach-Object{[string]$_.name}|Where-Object{$_}|Sort-Object -Unique)}else{@()}
+    $labelsExact=$both.Count -eq 1 -and @(Compare-Object ($ExpectedLabels|Sort-Object -Unique) $labels).Count -eq 0
+    [pscustomobject]@{
+        LegacyRunnerId=$agentId;LegacyRunnerName=$agentName
+        LocalRunnerMetadataExact=($idValid -and $nameValid -and $localRepositoryExact)
+        RepositoryMismatch=(-not $localRepositoryExact -or -not $repositoryExact)
+        RunnerNameMismatch=(-not $nameValid -or ($byId.Count -eq 1 -and [string]$byId[0].name -cne $agentName))
+        RunnerIdMismatch=(-not $idValid -or ($byName.Count -eq 1 -and [string]$byName[0].id -cne $agentId))
+        DuplicateGitHubRunner=($both.Count -gt 1 -or $byId.Count -gt 1 -or $byName.Count -gt 1)
+        GitHubRunnerCount=$both.Count;GitHubRunnerExact=$labelsExact
+        GitHubRunnerStatus=if($both.Count -eq 1){[string]$both[0].status}else{'unknown'}
+        GitHubRunnerBusy=if($both.Count -eq 1){[bool]$both[0].busy}else{$true}
+    }
+}
+
+function Test-Phase12BFileSha256 {
+    [CmdletBinding()]param([Parameter(Mandatory)][string]$Path,[Parameter(Mandatory)][string]$ExpectedSha256)
+    if($ExpectedSha256 -notmatch '^[0-9a-f]{64}$' -or -not(Test-Path -LiteralPath $Path -PathType Leaf) -or -not(Test-Phase12BNoReparse $Path)){return $false}
+    try{$hash=(Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()}catch{return $false}
+    $hash -ceq $ExpectedSha256
+}
+
+function Get-Phase12BMigrationIntentPath {
+    [CmdletBinding()]param([Parameter(Mandatory)][string]$RuntimeRoot)
+    if(-not[IO.Path]::IsPathRooted($RuntimeRoot)){throw 'Runtime root must be absolute.'}
+    [IO.Path]::GetFullPath((Join-Path $RuntimeRoot 'migration\host-migration.json'))
+}
+
+function Test-Phase12BMigrationIntent {
+    [CmdletBinding()]param([Parameter(Mandatory)]$Intent)
+    $required=@('schema','operation','operation_id','source_state','repository_id','repository_full_name','legacy_runner_directory','legacy_runner_id','legacy_runner_name','execution_area_id','target_runner_directory','target_runner_name','package_version','package_sha256','dispatch_initial_state','dispatch_restore_required','migration_stage','state_entered_at')
+    $actual=@($Intent.PSObject.Properties.Name|Sort-Object)
+    if(@(Compare-Object ($required|Sort-Object) $actual).Count -ne 0){return $false}
+    if([string]$Intent.schema -ne '1' -or [string]$Intent.operation -cne 'PHASE12B_LEGACY_HOST_MIGRATION' -or [string]$Intent.source_state -cne 'LEGACY_PHASE10_INTERACTIVE'){return $false}
+    if([string]$Intent.repository_id -notmatch '^[1-9][0-9]*$' -or [string]$Intent.repository_full_name -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'){return $false}
+    if(-not[IO.Path]::IsPathRooted([string]$Intent.legacy_runner_directory) -or -not[IO.Path]::IsPathRooted([string]$Intent.target_runner_directory)){return $false}
+    if([string]$Intent.legacy_runner_id -notmatch '^[1-9][0-9]*$' -or [string]$Intent.legacy_runner_name -notmatch '^[A-Za-z0-9_.-]+$' -or [string]$Intent.target_runner_name -notmatch '^codex-repo-[1-9][0-9]*$'){return $false}
+    if([string]$Intent.package_version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or [string]$Intent.package_sha256 -notmatch '^[0-9a-f]{64}$'){return $false}
+    if([string]$Intent.dispatch_initial_state -cne 'active' -or -not($Intent.dispatch_restore_required -is [bool]) -or -not[bool]$Intent.dispatch_restore_required){return $false}
+    $operationGuid=[guid]::Empty;if(-not[guid]::TryParseExact([string]$Intent.operation_id,'D',[ref]$operationGuid)){return $false}
+    $guid=[guid]::Empty;if(-not[guid]::TryParse([string]$Intent.execution_area_id,[ref]$guid)){return $false}
+    if([string]$Intent.migration_stage -notin $script:Phase12BMigrationStages){return $false}
+    $timestamp=[DateTimeOffset]::MinValue
+    [DateTimeOffset]::TryParseExact([string]$Intent.state_entered_at,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind,[ref]$timestamp) -and $timestamp.Offset -eq [TimeSpan]::Zero
+}
+
+function Read-Phase12BMigrationIntent {
+    [CmdletBinding()]param([Parameter(Mandatory)][string]$RuntimeRoot)
+    $path=Get-Phase12BMigrationIntentPath $RuntimeRoot
+    if(-not(Test-Path -LiteralPath $path)){return $null}
+    if(-not(Test-Path -LiteralPath $path -PathType Leaf) -or -not(Test-Phase12BNoReparse $path)){throw 'Migration intent path is unsafe.'}
+    try {
+        $raw=Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+        $convertFromJson=Get-Command ConvertFrom-Json -ErrorAction Stop
+        $dateKindSupported=$convertFromJson.Parameters.ContainsKey('DateKind')
+        if($dateKindSupported){$intent=$raw|ConvertFrom-Json -DateKind String -ErrorAction Stop}
+        else{$intent=$raw|ConvertFrom-Json -ErrorAction Stop}
+        # Windows PowerShell 5.1 eagerly converts ISO timestamps to DateTime.
+        # Restore the exact UTC wire value before strict contract validation so
+        # parsing remains equivalent to PowerShell 7's -DateKind String.
+        $timestampMatches=[regex]::Matches($raw,'"state_entered_at"\s*:\s*"(?<value>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|\+00:00))"')
+        if($timestampMatches.Count -eq 1){$intent.state_entered_at=$timestampMatches[0].Groups['value'].Value}
+    } catch {throw 'Migration intent is malformed.'}
+    if(-not(Test-Phase12BMigrationIntent $intent)){throw 'Migration intent contract is invalid.'}
+    $intent
+}
+
+function Write-Phase12BMigrationIntent {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$RuntimeRoot,[Parameter(Mandatory)][string]$Stage,
+        [Parameter(Mandatory)]$Identity
+    )
+    if($Stage -notin $script:Phase12BMigrationStages){throw 'Unsupported migration stage.'}
+    $path=Get-Phase12BMigrationIntentPath $RuntimeRoot;$directory=Split-Path -Parent $path
+    if(-not(Test-Path -LiteralPath $directory -PathType Container)){New-Item -ItemType Directory -Path $directory -Force|Out-Null}
+    if(-not(Test-Phase12BNoReparse $directory)){throw 'Migration intent directory is unsafe.'}
+    $dispatchInitialState=if($Identity.PSObject.Properties['DispatchInitialState']){[string]$Identity.DispatchInitialState}else{'active'}
+    $dispatchRestoreRequired=if($Identity.PSObject.Properties['DispatchRestoreRequired']){[bool]$Identity.DispatchRestoreRequired}else{$true}
+    $intent=[ordered]@{schema=1;operation='PHASE12B_LEGACY_HOST_MIGRATION';operation_id=[string]$Identity.OperationId;source_state='LEGACY_PHASE10_INTERACTIVE';repository_id=[string]$Identity.RepositoryId;repository_full_name=[string]$Identity.RepositoryFullName;legacy_runner_directory=[IO.Path]::GetFullPath([string]$Identity.LegacyRunnerDirectory);legacy_runner_id=[string]$Identity.LegacyRunnerId;legacy_runner_name=[string]$Identity.LegacyRunnerName;execution_area_id=[string]$Identity.ExecutionAreaId;target_runner_directory=[IO.Path]::GetFullPath([string]$Identity.TargetRunnerDirectory);target_runner_name=[string]$Identity.TargetRunnerName;package_version=[string]$Identity.PackageVersion;package_sha256=[string]$Identity.PackageSha256;dispatch_initial_state=$dispatchInitialState;dispatch_restore_required=$dispatchRestoreRequired;migration_stage=$Stage;state_entered_at=[DateTimeOffset]::UtcNow.ToString('o',[Globalization.CultureInfo]::InvariantCulture)}
+    if(-not(Test-Phase12BMigrationIntent ([pscustomobject]$intent))){throw 'Refusing invalid migration intent.'}
+    $temp=Join-Path $directory ('.host-migration.'+[guid]::NewGuid().ToString('N')+'.tmp');$backup=Join-Path $directory ('.host-migration.'+[guid]::NewGuid().ToString('N')+'.bak')
+    try{$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($intent|ConvertTo-Json -Compress));$stream=[IO.FileStream]::new($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough);try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()};if(Test-Path -LiteralPath $path){[IO.File]::Replace($temp,$path,$backup,$true);Remove-Item -LiteralPath $backup -Force}else{[IO.File]::Move($temp,$path)}}finally{if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Force};if(Test-Path -LiteralPath $backup){Remove-Item -LiteralPath $backup -Force}}
+    [pscustomobject]$intent
+}
+
+function Initialize-Phase12BMigrationIntent {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)][string]$RuntimeRoot,[Parameter(Mandatory)]$Identity
+    )
+    $target=[IO.Path]::GetFullPath($RuntimeRoot)
+    if(Test-Path -LiteralPath $target){throw 'Migration runtime root already exists; use the resume path.'}
+    $parent=Split-Path -Parent $target;$leaf=Split-Path -Leaf $target
+    if(-not(Test-Path -LiteralPath $parent -PathType Container) -or -not(Test-Phase12BNoReparse $parent)){throw 'Migration runtime parent is unsafe.'}
+    $staging=Join-Path $parent ('.'+$leaf+'.migration.'+[guid]::NewGuid().ToString('N')+'.tmp')
+    try {
+        New-Item -ItemType Directory -Path (Join-Path $staging 'migration') -Force|Out-Null
+        Write-Phase12BMigrationIntent -RuntimeRoot $staging -Stage LEGACY_VERIFIED -Identity $Identity|Out-Null
+        [IO.Directory]::Move($staging,$target)
+        $read=Read-Phase12BMigrationIntent -RuntimeRoot $target
+        if($null -eq $read -or [string]$read.migration_stage -cne 'LEGACY_VERIFIED'){throw 'Initial migration intent publication read-back failed.'}
+        $read
+    } finally {
+        if(Test-Path -LiteralPath $staging){Remove-Item -LiteralPath $staging -Recurse -Force}
+    }
+}
+
+function Get-Phase12BMigrationSourceState {
+    [CmdletBinding()]param([Parameter(Mandatory)]$Observation)
+    if([string]$Observation.HostState -eq 'EXISTING' -and [bool]$Observation.CurrentManagedExact){return 'CURRENT_MANAGED'}
+    $identityConflict=[bool]$Observation.IdentityConflict -or [bool]$Observation.DuplicateGitHubRunner -or [bool]$Observation.UnexpectedService -or [bool]$Observation.RepositoryMismatch -or [bool]$Observation.RunnerNameMismatch -or [bool]$Observation.RunnerIdMismatch
+    if($identityConflict){return 'CONFLICT'}
+    $legacyEvidence=[bool]$Observation.ExecutionRootPresent -or [bool]$Observation.LegacyRunnerPresent -or [int]$Observation.GitHubRunnerCount -gt 0
+    $exact=[string]$Observation.HostState -eq 'INCONSISTENT' -and [bool]$Observation.ExecutionRootPresent -and [bool]$Observation.ExecutionInspect -and [bool]$Observation.ExecutionPreflight -and [bool]$Observation.ExecutionAreaIdExact -and [string]$Observation.CurrentRunState -eq 'ABSENT' -and [string]$Observation.MutexState -eq 'FREE' -and [bool]$Observation.ResidualClean -and -not[bool]$Observation.CredentialResidue -and [int]$Observation.RelevantProcessCount -eq 0 -and [bool]$Observation.LegacyRunnerPresent -and [bool]$Observation.LegacyRunnerSafe -and [bool]$Observation.LegacyRunnerFilesExact -and [bool]$Observation.LocalRunnerMetadataExact -and [int]$Observation.GitHubRunnerCount -eq 1 -and [bool]$Observation.GitHubRunnerExact -and [string]$Observation.GitHubRunnerStatus -eq 'offline' -and -not[bool]$Observation.GitHubRunnerBusy -and [int]$Observation.ActiveGitHubJobCount -eq 0 -and -not[bool]$Observation.LegacyServicePresent -and [int]$Observation.RunnerProcessCount -eq 0 -and [bool]$Observation.TargetRootsAbsent -and [bool]$Observation.DispatchInitiallyActive -and [string]$Observation.WorkflowState -in @('MANAGED_OLD','EXACT_TARGET')
+    if($exact){return 'LEGACY_PHASE10_INTERACTIVE'}
+    if($legacyEvidence){return 'UNSUPPORTED_PARTIAL'}
+    'CONFLICT'
+}
+
+function Get-Phase12BMigrationRecoveryDecision {
+    [CmdletBinding()]param([string]$Stage,[Parameter(Mandatory)]$Actual)
+    if([bool]$Actual.IdentityConflict -or [bool]$Actual.UnknownState){return 'MANUAL_INTERVENTION_REQUIRED'}
+    if([bool]$Actual.LegacyRegistered -and [bool]$Actual.TargetRegistered){return 'MANUAL_INTERVENTION_REQUIRED'}
+    if([string]::IsNullOrWhiteSpace($Stage)){return 'RETRY_SAFE'}
+    if($Stage -notin $script:Phase12BMigrationStages){return 'MANUAL_INTERVENTION_REQUIRED'}
+    if([bool]$Actual.PostconditionMatchesStage -or [bool]$Actual.NextStagePostcondition){return 'RESUME_SAFE'}
+    if([bool]$Actual.SafeApprovedRecoveryCandidate){return 'RECOVER_WITH_APPROVAL'}
+    'MANUAL_INTERVENTION_REQUIRED'
+}
+
+function Test-Phase12BMigrationStageTopology {
+    [CmdletBinding()]param([Parameter(Mandatory)][string]$Stage,[Parameter(Mandatory)]$Actual)
+    if($Stage -notin $script:Phase12BMigrationStages -or $Actual.IdentityConflict -or $Actual.UnknownState -or -not $Actual.LegacyDirectoryRetained){return $false}
+    switch($Stage){
+      'LEGACY_VERIFIED' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and -not $Actual.DispatchFenced }
+      # There is no provider-visible ownership token for a disabled workflow.
+      # Only an observed active workflow is a safe pre-fence state; disabled at
+      # this durable boundary is ambiguous and requires manual recovery.
+      'DISPATCH_FENCING' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchStateKnown -and -not $Actual.DispatchFenced }
+      'DISPATCH_FENCED' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchFenced }
+      'QUIESCENT' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchFenced -and $Actual.Quiescent }
+      'TARGET_HOST_PREPARED' { return $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchFenced -and $Actual.Quiescent -and $Actual.TargetHostPrepared -and $Actual.PackageVerified -and $Actual.ExecutionAreaIdPreserved -and $Actual.AclExact }
+      'LEGACY_RUNNER_UNREGISTERING' { return -not $Actual.TargetRegistered -and $Actual.DispatchFenced -and $Actual.TargetHostPrepared }
+      'LEGACY_RUNNER_UNREGISTERED' { return -not $Actual.LegacyRegistered -and -not $Actual.TargetRegistered -and $Actual.DispatchFenced -and $Actual.TargetHostPrepared }
+      'TARGET_RUNNER_REGISTERING' { return -not $Actual.LegacyRegistered -and $Actual.DispatchFenced -and $Actual.TargetHostPrepared }
+      'TARGET_RUNNER_REGISTERED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.DispatchFenced }
+      'SERVICE_INSTALLING' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.DispatchFenced }
+      'SERVICE_INSTALLED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceInstalled -and $Actual.ServiceExact -and $Actual.DispatchFenced }
+      'SERVICE_RUNNING' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.DispatchFenced }
+      # ACTIVE_VERIFIED with dispatch already restored is the legacy post-restore,
+      # pre-persistence crash window.  All other exact postconditions still apply.
+      'ACTIVE_VERIFIED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact }
+      'DISPATCH_RESTORING' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact }
+      'DISPATCH_RESTORED' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact -and -not $Actual.DispatchFenced }
+      'MIGRATION_COMPLETE' { return -not $Actual.LegacyRegistered -and $Actual.TargetRegistered -and $Actual.ServiceRunning -and $Actual.ServiceExact -and $Actual.ActiveExact -and -not $Actual.DispatchFenced -and $Actual.ExecutionAreaIdPreserved }
+    }
+    $false
+}
+
+function Invoke-Phase12BMigrationLifecycle {
+    [CmdletBinding()]param(
+        [Parameter(Mandatory)]$Identity,[Parameter(Mandatory)][string]$InitialStage,
+        [Parameter(Mandatory)][scriptblock]$ReadState,[Parameter(Mandatory)][scriptblock]$Mutate,[Parameter(Mandatory)][scriptblock]$Persist
+    )
+    if($InitialStage -notin $script:Phase12BMigrationStages){throw 'Migration lifecycle stage is invalid.'}
+    $stage=$InitialStage
+    function Save([string]$s){& $Persist $s $Identity|Out-Null;$script:phase12bStage=$s}
+    function State(){& $ReadState}
+    $script:phase12bStage=$stage
+    $s=State
+    if($s.IdentityConflict -or $s.UnknownState){throw 'Migration actual state is ambiguous.'}
+    if(-not(Test-Phase12BMigrationStageTopology -Stage $stage -Actual $s)){throw 'Migration stage contradicts actual topology.'}
+    if($stage -eq 'MIGRATION_COMPLETE'){
+        if($s.DispatchFenced -or -not($s.ActiveExact -and $s.TargetRegistered -and $s.ServiceRunning -and $s.ServiceExact -and $s.ExecutionAreaIdPreserved -and $s.LegacyDirectoryRetained) -or $s.LegacyRegistered){throw 'Completed migration postcondition is not exact.'}
+        return [pscustomobject]@{Result='PASS';Stage=$stage;Postcondition='MIGRATION_COMPLETE'}
+    }
+    if($stage -eq 'LEGACY_VERIFIED'){if($s.DispatchFenced){throw 'LEGACY_VERIFIED cannot have a preexisting disabled dispatch state.'};Save 'DISPATCH_FENCING';$stage='DISPATCH_FENCING'}
+    if($stage -eq 'DISPATCH_FENCING'){$s=State;if(-not $s.DispatchStateKnown){throw 'Dispatch state is unknown.'};if($s.DispatchFenced){throw 'Dispatch fencing ownership is ambiguous; manual intervention is required.'};& $Mutate 'FenceDispatch';$s=State;if(-not $s.DispatchFenced){throw 'Dispatch fence read-back failed.'};Save 'DISPATCH_FENCED';$stage='DISPATCH_FENCED'}
+    if($stage -eq 'DISPATCH_FENCED'){$s=State;if(-not $s.Quiescent){& $Mutate 'WaitForQuiescence';$s=State};if(-not $s.Quiescent){throw 'Migration quiescence is not proven.'};Save 'QUIESCENT';$stage='QUIESCENT'}
+    if($stage -eq 'QUIESCENT'){if(-not $s.TargetHostPrepared){& $Mutate 'PrepareTargetHost'};$s=State;if(-not($s.TargetHostPrepared -and $s.PackageVerified -and $s.ExecutionAreaIdPreserved -and $s.AclExact)){throw 'Target host preparation read-back failed.'};Save 'TARGET_HOST_PREPARED';$stage='TARGET_HOST_PREPARED'}
+    if($stage -eq 'TARGET_HOST_PREPARED'){& $Mutate 'WaitForQuiescence';$s=State;if(-not $s.Quiescent){throw 'Migration quiescence is not proven immediately before unregister.'};Save 'LEGACY_RUNNER_UNREGISTERING';$stage='LEGACY_RUNNER_UNREGISTERING'}
+    if($stage -eq 'LEGACY_RUNNER_UNREGISTERING'){& $Mutate 'WaitForQuiescence';$s=State;if(-not $s.Quiescent){throw 'Migration quiescence is not proven before legacy unregister.'};if($s.LegacyRegistered){& $Mutate 'UnregisterLegacy'};$s=State;if($s.LegacyRegistered){throw 'Legacy runner unregister read-back failed.'};Save 'LEGACY_RUNNER_UNREGISTERED';$stage='LEGACY_RUNNER_UNREGISTERED'}
+    if($stage -eq 'LEGACY_RUNNER_UNREGISTERED'){Save 'TARGET_RUNNER_REGISTERING';$stage='TARGET_RUNNER_REGISTERING'}
+    if($stage -eq 'TARGET_RUNNER_REGISTERING'){if(-not $s.TargetRegistered){& $Mutate 'RegisterTarget'};$s=State;if(-not $s.TargetRegistered -or $s.LegacyRegistered){throw 'Target runner registration read-back failed.'};Save 'TARGET_RUNNER_REGISTERED';$stage='TARGET_RUNNER_REGISTERED'}
+    if($stage -eq 'TARGET_RUNNER_REGISTERED'){Save 'SERVICE_INSTALLING';$stage='SERVICE_INSTALLING'}
+    if($stage -eq 'SERVICE_INSTALLING'){if(-not $s.ServiceInstalled){& $Mutate 'InstallService'};$s=State;if(-not $s.ServiceInstalled){throw 'Official Service installation read-back failed.'};Save 'SERVICE_INSTALLED';$stage='SERVICE_INSTALLED'}
+    if($stage -eq 'SERVICE_INSTALLED'){if(-not $s.ServiceRunning){& $Mutate 'StartService'};$s=State;if(-not($s.ServiceRunning -and $s.ServiceExact)){throw 'Service Running read-back failed.'};Save 'SERVICE_RUNNING';$stage='SERVICE_RUNNING'}
+    if($stage -eq 'SERVICE_RUNNING'){if(-not $s.ActiveExact){& $Mutate 'WriteActiveMetadata'};$s=State;if(-not($s.ActiveExact -and $s.ExecutionAreaIdPreserved)){throw 'ACTIVE verification failed.'};Save 'ACTIVE_VERIFIED';$stage='ACTIVE_VERIFIED'}
+    if($stage -eq 'ACTIVE_VERIFIED'){Save 'DISPATCH_RESTORING';$stage='DISPATCH_RESTORING'}
+    if($stage -eq 'DISPATCH_RESTORING'){if($s.DispatchFenced){& $Mutate 'RestoreDispatch'};$s=State;if($s.DispatchFenced -or -not($s.ActiveExact -and $s.TargetRegistered -and $s.ServiceRunning -and $s.ServiceExact -and $s.ExecutionAreaIdPreserved -and $s.LegacyDirectoryRetained) -or $s.LegacyRegistered){throw 'Dispatch restoration read-back failed.'};Save 'DISPATCH_RESTORED';$stage='DISPATCH_RESTORED'}
+    if($stage -eq 'DISPATCH_RESTORED'){$s=State;if($s.DispatchFenced -or -not($s.ActiveExact -and $s.TargetRegistered -and $s.ServiceRunning -and $s.ServiceExact -and $s.ExecutionAreaIdPreserved -and $s.LegacyDirectoryRetained) -or $s.LegacyRegistered){throw 'Migration final verification failed.'};Save 'MIGRATION_COMPLETE';$stage='MIGRATION_COMPLETE'}
+    [pscustomobject]@{Result='PASS';Stage=$stage;Postcondition='MIGRATION_COMPLETE'}
+}
+
+Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BOnboardPackageOperationId,Get-Phase12BFixedRunnerAdapterArguments,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BCompleteRunnerList,Get-Phase12BGitHubRunnerList,Test-Phase12BRunnerPackageTree,Assert-Phase12BRunnerStagingAuthority,Install-Phase12BRunnerPackageAtomically,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle

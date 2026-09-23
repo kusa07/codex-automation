@@ -112,6 +112,44 @@ routes migration through the canonical caller lifecycle and full verification.
 No normal run
 silently changes identity, ACL, root, marker/schema, or runner architecture.
 
+Migration does not broaden `HOST_STATE`. It separately reports
+`MIGRATION_SOURCE_STATE` as `CURRENT_MANAGED`,
+`LEGACY_PHASE10_INTERACTIVE`, `UNSUPPORTED_PARTIAL`, or `CONFLICT`. Only the
+complete Phase 10 fingerprint is automatically migratable: managed execution
+area inspect and clean preflight, no execution ownership/residue/process,
+the deterministic private `migrations/<host_id>.yaml` source directory and
+caller reference, local `.runner` metadata matching exactly one idle GitHub
+repository runner with canonical labels, no legacy Service, absent target
+roots, and a trusted non-divergent caller workflow. The caller desired state,
+GitHub repository ID, local runner ID/name/repository URL, and GitHub runner
+registration must agree exactly. Partial or ambiguous evidence stops.
+
+Before target mutation, migration atomically publishes
+`runtime_root\migration\host-migration.json`. Durable lifecycle stages are
+reconciled with filesystem, Service, and GitHub read-back on resume. A
+reversible workflow dispatch fence is read back before quiescence; Batch C
+does not change workflow content or its immutable pin. The execution area and
+its actual `execution_area_id` are frozen into the migration intent and
+preserved, while the configured source runner directory and `_work` remain
+retained as non-authoritative evidence.
+
+Runner registration read-back is complete only after every GitHub API page is
+validated against one stable `total_count`, with duplicate IDs and truncation
+rejected. Final dispatch restoration is itself durable through
+`DISPATCH_RESTORING` and `DISPATCH_RESTORED`, including the older
+`ACTIVE_VERIFIED`/already-restored crash window.
+
+The private migration desired state pins an exact semantic runner version and
+lowercase SHA-256. Public code deterministically constructs the official
+`actions/runner` release asset name and URL, requires the GitHub release asset
+digest to match the configured SHA-256, and verifies the downloaded file hash
+before extraction. Arbitrary URLs, latest-version lookup, and fallback package
+authority are not permitted.
+Extraction uses intent `operation_id` staging beneath the canonical runner root.
+Only a complete, non-reparse package tree is atomically renamed to the final
+repository runner directory. Current-operation partial staging may be rebuilt;
+unknown staging and partial final roots require operator review.
+
 Explicit TestMode replaces only external state and mutation providers. Caller
 lifecycle scripts still invoke `caller-runner.ps1` and the same classification,
 recovery, quiescence, and lifecycle transition logic used by production.

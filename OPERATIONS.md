@@ -665,3 +665,38 @@ Host migration and production caller workflow switches require quiescence: no
 active or queued workflow, active local execution, held Global Mutex, or
 residual execution state. Batch A supplies the plan contracts only; it does
 not perform those mutations.
+
+### Phase 10 interactive host migration
+
+`scripts/host/migrate-host.ps1` is the sole Batch C entry point. Its plan
+reports both normal `HOST_STATE` and the separate `MIGRATION_SOURCE_STATE`,
+immutable legacy/target identities, quiescence, pinned package provenance,
+and durable migration stage. Only the complete
+`LEGACY_PHASE10_INTERACTIVE` fingerprint may proceed; partial and conflicting
+topologies never mutate automatically.
+
+The migration manifest is resolved only as
+`<private-config-root>/migrations/<host_id>.yaml`. It selects a canonical caller
+entry, source runner directory, and pinned runner package version/SHA-256.
+Runner ID/name and execution-area ID are discovered from local/GitHub actual
+state, cross-checked, and then frozen in the migration intent; there is no
+operator-supplied migration-config path.
+
+GitHub runner discovery follows every API page and requires fetched count to
+equal the authoritative `total_count`; malformed, duplicate, truncated, or
+over-limit pagination stops before mutation. Dispatch restoration uses durable
+`DISPATCH_RESTORING` and `DISPATCH_RESTORED` stages so both sides of the final
+restore/read-back persistence window are resumable.
+
+After approval, an atomic intent is published before target mutation. The
+operation fences new dispatch without changing workflow content, rechecks
+quiescence, preserves the execution-area ID, creates target roots and exact
+ACLs, verifies the configured package against the official GitHub release
+asset digest and downloaded SHA-256, unregisters the exact legacy registration,
+then installs and verifies the official NETWORK SERVICE runner. Each mutation
+has authoritative read-back before its completed stage is persisted. The old
+runner directory is retained; cleanup is a separate operator task.
+Package extraction occurs only in operation-ID-owned staging under the
+canonical runner root. Required files are validated before a same-volume atomic
+directory move publishes the final runner root; partial final roots and unknown
+staging fail closed.

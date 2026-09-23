@@ -16,6 +16,13 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/callers" "$tmp/retired-callers"
 caller="$tmp/callers/example-project.yaml"; retired="$tmp/retired-callers/example-project.yaml"
 touch "$tmp/environment.yaml" "$caller" "$tmp/host.yaml"
+mkdir -p "$tmp/runner-package-source/bin"
+touch "$tmp/runner-package-source/config.cmd" "$tmp/runner-package-source/run.cmd" "$tmp/runner-package-source/bin/Runner.Listener.exe" "$tmp/runner-package-source/bin/RunnerService.exe"
+PHASE12B_PACKAGE_PATH_WIN="$(cygpath -w "$tmp/runner-package.zip")"
+PHASE12B_PACKAGE_SOURCE_WIN="$(cygpath -w "$tmp/runner-package-source")"
+export PHASE12B_PACKAGE_PATH_WIN
+export PHASE12B_PACKAGE_SOURCE_WIN
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Compress-Archive -Path '$PHASE12B_PACKAGE_SOURCE_WIN\\*' -DestinationPath '$PHASE12B_PACKAGE_PATH_WIN'"
 cat > "$tmp/bin/yq" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
@@ -78,7 +85,7 @@ if "%~2"==".paths.runner_root" echo %PHASE12B_FIXTURE_ROOT_WIN%\runners
 if "%~2"==".paths.runtime_root" echo %PHASE12B_FIXTURE_ROOT_WIN%\runtime
 if "%~2"==".paths.execution_root" echo %PHASE12B_FIXTURE_ROOT_WIN%\execution
 if "%~2"==".paths.profile_root" echo %PHASE12B_FIXTURE_ROOT_WIN%\profile
-if "%~2"==".runner.package_path" echo.
+if "%~2"==".runner.package_path" echo %PHASE12B_PACKAGE_PATH_WIN%
 if "%~2"==".runner.labels[]" (
   echo self-hosted
   echo Windows
