@@ -32,6 +32,16 @@ function Read-TestMigrationState {
 }
 function Write-TestMigrationState($State){$State|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $MigrationReadbackFile -NoNewline}
 function Get-WorkflowApiPath { 'repos/{0}/actions/workflows/{1}' -f $caller.Repository,[uri]::EscapeDataString($caller.WorkflowPath) }
+function Get-GitHubRepositoryIdentity([string]$Repository) {
+    if([string]::IsNullOrWhiteSpace($Repository)){throw 'GitHub repository identity is missing.'}
+    $projected=& gh api "repos/$Repository" --jq '{id,full_name}' 2>$null
+    if($LASTEXITCODE -ne 0){throw 'GitHub repository read-back failed.'}
+    try{$actual=($projected -join "`n")|ConvertFrom-Json -ErrorAction Stop}catch{throw 'GitHub repository metadata projection is malformed.'}
+    if($null -eq $actual -or -not $actual.PSObject.Properties['id'] -or -not $actual.PSObject.Properties['full_name']){throw 'GitHub repository metadata projection is incomplete.'}
+    $actualId=[string]$actual.id;$actualName=[string]$actual.full_name
+    if($actualId -notmatch '^[1-9][0-9]*$' -or [string]::IsNullOrWhiteSpace($actualName)){throw 'GitHub repository metadata projection is invalid.'}
+    [pscustomobject]@{id=$actualId;full_name=$actualName}
+}
 function Get-WorkflowDispatchState {
     if($TestMode){return [string](Read-TestMigrationState).workflow_dispatch_state}
     $raw=& gh api (Get-WorkflowApiPath) 2>$null;if($LASTEXITCODE -ne 0){throw 'Workflow dispatch-state read-back failed.'}
@@ -71,8 +81,7 @@ function Get-LegacySourceObservation {
     $runner=$null
     if($legacySafe){try{$runner=Get-Content -LiteralPath (Join-Path $LegacyRunnerDirectory '.runner') -Raw|ConvertFrom-Json -ErrorAction Stop}catch{}}
     $filesExact=$legacySafe -and @('config.cmd','run.cmd','.runner','bin\Runner.Listener.exe'|Where-Object{-not(Test-Path -LiteralPath (Join-Path $LegacyRunnerDirectory $_) -PathType Leaf)}).Count -eq 0
-    $repoRaw=& gh api "repos/$($caller.Repository)" 2>$null;if($LASTEXITCODE -ne 0){throw 'GitHub repository read-back failed.'}
-    $actualRepository=$repoRaw|ConvertFrom-Json -ErrorAction Stop
+    $actualRepository=Get-GitHubRepositoryIdentity $caller.Repository
     $runnerResponse=Get-CompleteGitHubRunners
     $gh=@($runnerResponse.Runners)
     if(-not $actualRepository.PSObject.Properties['id'] -or -not $actualRepository.PSObject.Properties['full_name']){throw 'GitHub repository metadata is incomplete.'}
@@ -102,9 +111,7 @@ function Get-MigrationRepositoryIdentityState($FixtureState) {
         if($state.PSObject.Properties['github_actual_repository_full_name']){$actualRepositoryFullName=[string]$state.github_actual_repository_full_name}
     } else {
         try {
-            $repoRaw=& gh api "repos/$($identity.RepositoryFullName)" 2>$null
-            if($LASTEXITCODE -ne 0){throw 'repository query failed'}
-            $actualRepository=$repoRaw|ConvertFrom-Json -ErrorAction Stop
+            $actualRepository=Get-GitHubRepositoryIdentity $identity.RepositoryFullName
             if($actualRepository.PSObject.Properties['id']){$actualRepositoryId=[string]$actualRepository.id}
             if($actualRepository.PSObject.Properties['full_name']){$actualRepositoryFullName=[string]$actualRepository.full_name}
             $readSucceeded=$true
