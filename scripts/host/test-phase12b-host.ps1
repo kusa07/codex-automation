@@ -121,7 +121,7 @@ if "%q%"==".runner.scope" echo repository
   New-Item -ItemType Directory -Path (Join-Path $root 'callers')|Out-Null;New-Item -ItemType File -Path (Join-Path $root 'environment.yaml'),(Join-Path $root 'host.yaml'),(Join-Path $root 'callers/example.yaml')|Out-Null
   $rendered=[IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\templates\caller\codex-connectivity-test.yml.tpl')).Replace('__AUTOMATION_REPOSITORY__','kusa07/codex-automation').Replace('__AUTOMATION_WORKFLOW_PATH__','.github/workflows/codex-run.yml').Replace('__AUTOMATION_WORKFLOW_SHA__','352857a387b1f855920fb8d1587091b31e518c21').Replace('__GOOGLE_CLOUD_PROJECT_ID__','codex-automation-506111').Replace('__WORKLOAD_IDENTITY_PROVIDER__','projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions').Replace('__CODEX_AUTH_SECRET_ID__','codex-auth-example');$content=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($rendered))
   $member='principalSet://iam.googleapis.com/projects/896979145485/locations/global/workloadIdentityPools/github/attribute.repository_id/12345'
-  @{RepositoryId='12345';DefaultBranch='main';WorkflowBranch='main';Runners=@(@{name='codex-repo-12345';labels=@(@{name='self-hosted'},@{name='Windows'},@{name='X64'},@{name='codex-automation'})});WorkflowContent=$content;SecretVersions=@(@{name='projects/x/secrets/codex-auth-example/versions/1';state='ENABLED'});Iam=@{bindings=@(@{role='roles/secretmanager.secretAccessor';members=@($member)},@{role='roles/secretmanager.secretVersionManager';members=@($member)})};Provider=@{attributeCondition='assertion.repository_owner_id == "32902649" && assertion.job_workflow_ref == "kusa07/codex-automation/.github/workflows/codex-run.yml@352857a387b1f855920fb8d1587091b31e518c21"'}}|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $root 'external.json') -NoNewline
+  @{RepositoryId='12345';RepositoryFullName='kusa07/example';DefaultBranch='main';WorkflowBranch='main';Runners=@(@{name='codex-repo-12345';labels=@(@{name='self-hosted'},@{name='Windows'},@{name='X64'},@{name='codex-automation'})});WorkflowContent=$content;SecretVersions=@(@{name='projects/x/secrets/codex-auth-example/versions/1';state='ENABLED'});Iam=@{bindings=@(@{role='roles/secretmanager.secretAccessor';members=@($member)},@{role='roles/secretmanager.secretVersionManager';members=@($member)})};Provider=@{attributeCondition="assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21']"}}|ConvertTo-Json -Depth 10|Set-Content -LiteralPath (Join-Path $root 'external.json') -NoNewline
   $callerRunnerRoot=Join-Path $runnerRoot 'repo-12345';$serviceFixture=@(@{Name='actions.runner.kusa07-example.codex-repo-12345';PathName=('"{0}"' -f (Join-Path $callerRunnerRoot 'bin\RunnerService.exe'));StartName='NT AUTHORITY\NETWORK SERVICE';State='Running'})
   $serviceFixture|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $root 'services.json') -NoNewline
   # Bootstrap must see a wholly NEW host; prior classification fixtures are removed.
@@ -138,6 +138,49 @@ if "%q%"==".runner.scope" echo repository
   $activeMetadata=Get-Phase12BRunnerMetadataPath -RuntimeRoot $runtime -RepositoryId 12345;if(Test-Path -LiteralPath $activeMetadata){Remove-Item -LiteralPath $activeMetadata -Force};Write-Phase12BRunnerMetadata -RuntimeRoot $runtime -RepositoryId 12345 -RepositoryFullName 'kusa07/example' -RunnerRoot $runnerRoot -LifecycleState ACTIVE -ServiceName (Get-Phase12BExpectedServiceName $migratedRoot)|Out-Null
   $migrateLog=Join-Path $root 'migrate.log';& (Join-Path $PSScriptRoot 'migrate-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -AdapterLog $migrateLog -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null;$migratedMetadata=Read-Phase12BRunnerMetadata -RuntimeRoot $runtime -RepositoryId 12345 -RepositoryFullName kusa07/example -RunnerRoot $runnerRoot;if($migratedMetadata.lifecycle_state -ne 'ACTIVE'){throw 'migration did not route through canonical ACTIVE lifecycle'}
   $cfg=Read-Phase12BConfig (Join-Path $root 'environment.yaml')
+  $wifExpected="assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21']"
+  if(-not(Test-Phase12BWifCondition -Condition $wifExpected -OwnerId '32902649' -WorkflowIdentity 'kusa07/codex-automation/.github/workflows/codex-run.yml' -ActiveSha '352857a387b1f855920fb8d1587091b31e518c21')){throw 'canonical WIF condition was rejected'}
+  foreach($wifInvalid in @(
+    "assertion.repository_owner_id == '999999' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21']",
+    "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('other/repo/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21']",
+    "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['0000000000000000000000000000000000000000']",
+    "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21','352857a387b1f855920fb8d1587091b31e518c21']",
+    "assertion.repository_owner_id == '32902649' || assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21']",
+    "assertion.repository_owner_id == '32902649' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21']`n"
+  )){if(Test-Phase12BWifCondition -Condition $wifInvalid -OwnerId '32902649' -WorkflowIdentity 'kusa07/codex-automation/.github/workflows/codex-run.yml' -ActiveSha '352857a387b1f855920fb8d1587091b31e518c21'){throw 'invalid WIF condition was accepted'}}
+  # Production-shaped external read-back fixture: assert scalar project/pool/
+  # provider arguments instead of relying on the TestMode external shortcut.
+  $ghLog=Join-Path $root 'gh-args.log';$gcloudLog=Join-Path $root 'gcloud-args.log'
+  $ghMock=@'
+@echo off
+>>"%PHASE12B_GH_ARGS_LOG%" echo %*
+if "%~1"=="api" if "%~2"=="--paginate" (echo [{"total_count":0,"runners":[]} ]&exit /b 0)
+if "%~1"=="api" if not "%~2"=="--paginate" if not "%~2"=="--method" (echo {"id":"12345","full_name":"kusa07/example","default_branch":"main","content":""}&exit /b 0)
+if "%~1"=="api" if "%~2"=="--method" (echo {"ok":true}&exit /b 0)
+exit /b 0
+'@
+  $gcloudMock=@'
+@echo off
+>>"%PHASE12B_GCLOUD_ARGS_LOG%" echo %*
+if "%~1"=="secrets" if "%~2"=="versions" (echo []&exit /b 0)
+if "%~1"=="secrets" if "%~2"=="get-iam-policy" (echo {"bindings":[]}&exit /b 0)
+if "%~1"=="iam" (echo {"attributeCondition":"assertion.repository_owner_id == '32902649'"}&exit /b 0)
+exit /b 0
+'@
+  Set-Content -LiteralPath (Join-Path $bin 'gh.cmd') -Value $ghMock -NoNewline;Set-Content -LiteralPath (Join-Path $bin 'gcloud.cmd') -Value $gcloudMock -NoNewline
+  $oldPath=$env:PATH;$env:PATH="$bin;$oldPath";$env:PHASE12B_GH_ARGS_LOG=$ghLog;$env:PHASE12B_GCLOUD_ARGS_LOG=$gcloudLog
+  try {
+    $externalProduction=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0]
+    $gcloudArgs=Get-Content -LiteralPath $gcloudLog -Raw
+    if($gcloudArgs -notmatch '--project=codex-automation-506111' -or $gcloudArgs -notmatch '--workload-identity-pool=github' -or $gcloudArgs -notmatch 'providers describe github-actions'){throw 'production gcloud argument projection was not scalar and exact'}
+  } finally {$env:PATH=$oldPath;Remove-Item Env:PHASE12B_GH_ARGS_LOG,Env:PHASE12B_GCLOUD_ARGS_LOG -ErrorAction SilentlyContinue}
+  Remove-Item -LiteralPath (Join-Path $bin 'gh.cmd'),(Join-Path $bin 'gcloud.cmd') -Force
+  $identityBroken=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json;$identityBroken.RepositoryFullName='kusa07/other';$identityBrokenFile=Join-Path $root 'broken-repository-full-name.json';$identityBroken|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $identityBrokenFile -NoNewline
+  $identityExternal=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $identityBrokenFile
+  if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $identityExternal -RunnerName 'codex-repo-12345').Repository -eq 'PASS'){throw 'repository full_name mismatch was accepted'}
+  $identityMissing=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json;$identityMissing.PSObject.Properties.Remove('RepositoryFullName');$identityMissingFile=Join-Path $root 'missing-repository-full-name.json';$identityMissing|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $identityMissingFile -NoNewline
+  $identityMissingExternal=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $identityMissingFile
+  if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $identityMissingExternal -RunnerName 'codex-repo-12345').Repository -eq 'PASS'){throw 'missing repository full_name was accepted'}
   foreach($field in 'Provider','SecretVersions','Iam','WorkflowContent'){
     $broken=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json
     switch($field){'Provider'{$broken.Provider.attributeCondition='wrong'}'SecretVersions'{$broken.SecretVersions=$null}'Iam'{$broken.Iam=@{bindings=@()}}'WorkflowContent'{$broken.WorkflowContent=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('wrong'))}}
@@ -147,6 +190,9 @@ if "%q%"==".runner.scope" echo repository
   $branchBroken=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json;$branchBroken.WorkflowBranch='release';$branchFile=Join-Path $root 'broken-branch.json';$branchBroken|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $branchFile -NoNewline
   $branchExternal=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $branchFile
   if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $branchExternal -RunnerName 'codex-repo-12345').All){throw 'caller workflow branch mismatch was accepted'}
+  $verifyMalformed=Join-Path $root 'verify-malformed-external.json';Set-Content -LiteralPath $verifyMalformed -Value '{' -NoNewline
+  $verifyOutput=@(& (Join-Path $PSScriptRoot 'verify-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -TestMode -FixtureRoot $root -ExternalReadbackFile $verifyMalformed -ServiceReadbackFile (Join-Path $root 'services.json') 2>&1)
+  if($LASTEXITCODE -ne 2 -or ($verifyOutput -join "`n") -notmatch 'WORKFLOW_BRANCH=UNKNOWN'){throw 'verify-host malformed external read-back was not fail-closed with observable output'}
   $multiSecret=Get-Content -LiteralPath (Join-Path $root 'external.json') -Raw|ConvertFrom-Json;$multiSecret.SecretVersions=@(@{name='projects/x/secrets/codex-auth-example/versions/1';state='ENABLED'},@{name='projects/x/secrets/codex-auth-example/versions/2';state='ENABLED'});$multiFile=Join-Path $root 'broken-multiple-secret.json';$multiSecret|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $multiFile -NoNewline
   $multiExternal=Get-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -TestMode -FixtureRoot $root -ExternalReadbackFile $multiFile
   if((Test-Phase12BExternalCallerState -Config $cfg -Caller $cfg.Callers[0] -External $multiExternal -RunnerName 'codex-repo-12345').All){throw 'multiple enabled Secret versions were accepted'}

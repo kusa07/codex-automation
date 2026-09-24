@@ -119,6 +119,18 @@ function Read-Phase12BConfig {
  [pscustomobject]@{Environment=$PrivateConfig;HostFile=$hostFile;Host=$h;EnvironmentData=[pscustomobject]$e;Callers=$callers;MigrationFile=if($migration){$migration.Path}else{$migrationFile};Migration=$migration}
 }
 
+function Get-Phase12BGitHubRepositoryMetadata {
+ [CmdletBinding()]param([Parameter(Mandatory)][string]$Repository,[Parameter(Mandatory)][string]$GhPath)
+ try {
+  $projected=& $GhPath api "repos/$Repository" --jq '{id,full_name,default_branch}' 2>$null
+  if($LASTEXITCODE -ne 0){throw 'repository query failed'}
+  $repo=($projected -join "`n")|ConvertFrom-Json -ErrorAction Stop
+ } catch { throw "GitHub repository metadata read-back failed: $($_.Exception.Message)" }
+ $repositoryId=[string]$repo.id;$fullName=[string]$repo.full_name;$defaultBranch=[string]$repo.default_branch
+ if($repositoryId -notmatch '^[1-9][0-9]*$' -or [string]::IsNullOrWhiteSpace($fullName) -or $fullName -cne $Repository -or [string]::IsNullOrWhiteSpace($defaultBranch) -or $defaultBranch -notmatch '^[A-Za-z0-9._/-]+$'){throw 'GitHub repository metadata is invalid or mismatched.'}
+ [pscustomobject]@{id=$repositoryId;full_name=$fullName;default_branch=$defaultBranch}
+}
+
 function Get-Phase12BExternalCallerState {
  [CmdletBinding()]param([Parameter(Mandatory=$true)]$Config,[Parameter(Mandatory=$true)]$Caller,[switch]$TestMode,[string]$FixtureRoot,[string]$ExternalReadbackFile)
  Test-Phase12BTestAdapter -TestMode:$TestMode -FixtureRoot $FixtureRoot -ExternalReadbackFile $ExternalReadbackFile
@@ -126,16 +138,31 @@ function Get-Phase12BExternalCallerState {
  $gh=Get-Command gh -ErrorAction Stop;$gcloud=Get-Command gcloud -ErrorAction Stop
  function Read-Json([scriptblock]$Call,[string]$Name) { $raw=& $Call; if($LASTEXITCODE -ne 0){throw "$Name command failed."}; try{$raw|ConvertFrom-Json -ErrorAction Stop}catch{throw "$Name did not return valid JSON."} }
  try {
-   $repo=Read-Json { & $gh.Source api "repos/$($Caller.Repository)" } 'GitHub repository metadata'
-   $branch=[string]$repo.default_branch;if([string]::IsNullOrWhiteSpace($branch) -or $branch -notmatch '^[A-Za-z0-9._/-]+$'){throw 'GitHub default branch metadata is invalid.'}
+   $repo=Get-Phase12BGitHubRepositoryMetadata -Repository $Caller.Repository -GhPath $gh.Source
+   $repoId=[string]$repo.id;$repoName=[string]$repo.full_name
+   $branch=[string]$repo.default_branch
    $runnerListing=Get-Phase12BGitHubRunnerList -Repository $Caller.Repository -GhPath $gh.Source
    $workflow=Read-Json { & $gh.Source api ("repos/{0}/contents/{1}?ref={2}" -f $Caller.Repository,$Caller.WorkflowPath,[uri]::EscapeDataString($branch)) } 'GitHub caller workflow'
-   $versions=Read-Json { & $gcloud.Source secrets versions list $Caller.SecretId --project=$Config.EnvironmentData.project_id --format=json } 'Secret metadata'
-   $iam=Read-Json { & $gcloud.Source secrets get-iam-policy $Caller.SecretId --project=$Config.EnvironmentData.project_id --format=json } 'Secret IAM metadata'
+   $projectId=[string]$Config.EnvironmentData.project_id
+   $versions=Read-Json { & $gcloud.Source secrets versions list $Caller.SecretId --project=$projectId --format=json } 'Secret metadata'
+   $iam=Read-Json { & $gcloud.Source secrets get-iam-policy $Caller.SecretId --project=$projectId --format=json } 'Secret IAM metadata'
    $p=$Config.EnvironmentData.provider_resource -split '/';if($p.Count -ne 8){throw 'Invalid WIF Provider resource path.'}
-   $provider=Read-Json { & $gcloud.Source iam workload-identity-pools providers describe $p[7] --project=$Config.EnvironmentData.project_id --location=global --workload-identity-pool=$p[5] --format=json } 'WIF Provider metadata'
-   [pscustomobject]@{RepositoryId=[string]$repo.id;DefaultBranch=$branch;WorkflowBranch=$branch;Runners=@($runnerListing.Runners);SecretVersions=@($versions);Iam=$iam;Provider=$provider;WorkflowContent=[string]$workflow.content}
+   $poolId=[string]$p[5];$providerId=[string]$p[7]
+   $provider=Read-Json { & $gcloud.Source iam workload-identity-pools providers describe $providerId --project=$projectId --location=global --workload-identity-pool=$poolId --format=json } 'WIF Provider metadata'
+   [pscustomobject]@{RepositoryId=$repoId;RepositoryFullName=$repoName;DefaultBranch=$branch;WorkflowBranch=$branch;Runners=@($runnerListing.Runners);SecretVersions=@($versions);Iam=$iam;Provider=$provider;WorkflowContent=[string]$workflow.content}
  } catch { throw "External metadata read-back failed: $($_.Exception.Message)" }
+}
+function Test-Phase12BWifCondition {
+ [CmdletBinding()]param([AllowEmptyString()][string]$Condition,[Parameter(Mandatory)][string]$OwnerId,[Parameter(Mandatory)][string]$WorkflowIdentity,[Parameter(Mandatory)][string]$ActiveSha)
+ if($OwnerId -notmatch '^[1-9][0-9]*$' -or $ActiveSha -notmatch '^[0-9a-f]{40}$'){return $false}
+ $pattern="\Aassertion\.repository_owner_id\s*==\s*'(?<owner>[0-9]+)'\s*&&\s*assertion\.job_workflow_ref\.startsWith\('(?<ref>[^']+@)'\)\s*&&\s*assertion\.job_workflow_sha\s+in\s+\[(?<shas>.*)\]\z"
+ $match=[regex]::Match($Condition,$pattern)
+ if(-not $match.Success -or $match.Groups['owner'].Value -cne $OwnerId -or $match.Groups['ref'].Value -cne "$WorkflowIdentity@"){return $false}
+ $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+ $entries=@($match.Groups['shas'].Value -split ',')
+ if($entries.Count -eq 0){return $false}
+ foreach($entry in $entries){$entry=$entry.Trim();$shaMatch=[regex]::Match($entry,"\A'([0-9a-f]{40})'\z");if(-not $shaMatch.Success -or -not $seen.Add($shaMatch.Groups[1].Value)){return $false}}
+ $seen.Contains($ActiveSha)
 }
 function Test-Phase12BExternalCallerState {
  [CmdletBinding()]param([Parameter(Mandatory=$true)]$Config,[Parameter(Mandatory=$true)]$Caller,[Parameter(Mandatory=$true)]$External,[Parameter(Mandatory=$true)][string]$RunnerName)
@@ -143,7 +170,7 @@ function Test-Phase12BExternalCallerState {
  $allRunners=if($null -ne $External.Runners){@($External.Runners)}else{@()}
  $runner=@($allRunners|Where-Object{$null -ne $_ -and $_.PSObject.Properties['name'] -and [string]$_.name -eq $RunnerName})
  $actualLabels=if($runner.Count -eq 1 -and $null -ne $runner[0].labels){@($runner[0].labels|ForEach-Object{if($_ -and $_.PSObject.Properties['name']){[string]$_.name}}|Where-Object{$_}|Sort-Object -Unique)}else{@()}
- $repoOk=[string]$External.RepositoryId -eq [string]$Caller.RepositoryId
+ $repoOk=[string]$External.RepositoryId -eq [string]$Caller.RepositoryId -and $External.PSObject.Properties['RepositoryFullName'] -and [string]$External.RepositoryFullName -ceq [string]$Caller.Repository
  $branchOk=(-not [string]::IsNullOrWhiteSpace([string]$External.DefaultBranch)) -and ([string]$External.DefaultBranch -ceq [string]$External.WorkflowBranch)
  $runnerOk=$runner.Count -eq 1 -and @(Compare-Object $labels $actualLabels).Count -eq 0
  $allVersions=if($null -ne $External.SecretVersions){@($External.SecretVersions)}else{@()}
@@ -171,8 +198,8 @@ function Test-Phase12BExternalCallerState {
  }
  $workflowOk=$branchOk -and $expectedWorkflow -and (($raw -replace "`r`n","`n") -ceq ($expectedWorkflow -replace "`r`n","`n"))
  $cond=if($null -ne $External.Provider -and $External.Provider.PSObject.Properties['attributeCondition']){[string]$External.Provider.attributeCondition}else{''}
- $workflowIdentity="$($Config.EnvironmentData.automation_repository)/$($Config.EnvironmentData.automation_workflow_path)@$($Config.EnvironmentData.active_workflow_sha)"
- $wifOk=$cond -match[regex]::Escape([string]$Config.EnvironmentData.github_owner_id) -and $cond -match[regex]::Escape($workflowIdentity)
+ $workflowIdentity="$($Config.EnvironmentData.automation_repository)/$($Config.EnvironmentData.automation_workflow_path)"
+ $wifOk=Test-Phase12BWifCondition -Condition $cond -OwnerId ([string]$Config.EnvironmentData.github_owner_id) -WorkflowIdentity $workflowIdentity -ActiveSha ([string]$Config.EnvironmentData.active_workflow_sha)
  [pscustomobject]@{Repository=if($repoOk){'PASS'}else{'FAIL'};Branch=if($branchOk){'PASS'}else{'FAIL'};Runner=if($runnerOk){'PASS'}else{'FAIL'};Secret=if($secretOk){'PASS'}else{'FAIL'};Iam=if($iamOk){'PASS'}else{'FAIL'};Workflow=if($workflowOk){'PASS'}else{'FAIL'};Wif=if($wifOk){'PASS'}else{'FAIL'};All=($repoOk -and $branchOk -and $runnerOk -and $secretOk -and $iamOk -and $workflowOk -and $wifOk)}
 }
 
@@ -607,7 +634,7 @@ function Get-Phase12BCallerRunnerObservation {
         $injectionNames=@('PHASE12B_TEST_MODE','PHASE12B_TEST_ROOT','PHASE12B_TEST_ADAPTER','PHASE12B_RUNNER_STATE','PHASE12B_SERVICE_STATE','PHASE12B_RUNNER_APPLY','PHASE12B_SERVICE_APPLY','PHASE12B_SERVICE_STOP','PHASE12B_RUNNER_UNREGISTER','PHASE12B_WORKFLOW_APPLY','PHASE12B_WORKFLOW_REMOVE','PHASE12B_VERIFY','CODEX_RUNNER_TOKEN_COMMAND','CODEX_RUNNER_PACKAGE_PATH')
         foreach($name in $injectionNames){if(-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))){throw "Production test/command injection is prohibited: $name"}}
         $gh=Get-Command gh -ErrorAction Stop
-        try { $repoRaw=& $gh.Source api "repos/$RepositoryFullName" 2>$null;if($LASTEXITCODE -ne 0){throw 'repository query failed'};$repo=$repoRaw|ConvertFrom-Json -ErrorAction Stop } catch { throw "GitHub repository read-back failed: $($_.Exception.Message)" }
+        $repo=Get-Phase12BGitHubRepositoryMetadata -Repository $RepositoryFullName -GhPath $gh.Source
         $actualRepositoryId=[string]$repo.id
         $actualRepositoryFullName=[string]$repo.full_name
         try { $runnerResponse=Get-Phase12BGitHubRunnerList -Repository $RepositoryFullName -GhPath $gh.Source;$runnerRecords=@($runnerResponse.Runners) } catch { throw "GitHub runner read-back failed: $($_.Exception.Message)" }
@@ -1289,4 +1316,4 @@ function Invoke-Phase12BMigrationLifecycle {
     [pscustomobject]@{Result='PASS';Stage=$stage;Postcondition='MIGRATION_COMPLETE'}
 }
 
-Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BOnboardPackageOperationId,Get-Phase12BFixedRunnerAdapterArguments,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BCompleteRunnerList,Get-Phase12BGitHubRunnerList,Test-Phase12BRunnerPackageTree,Assert-Phase12BRunnerStagingAuthority,Install-Phase12BRunnerPackageAtomically,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle
+Export-ModuleMember -Function Test-Phase12BYqV4Version,Test-Phase12BFileAttributesSafe,Test-Phase12BNoReparse,Get-Phase12BCallerRunnerRoot,Get-Phase12BExpectedRunnerName,Get-Phase12BExpectedServiceName,Test-Phase12BServicePath,Test-Phase12BTestAdapter,Read-Phase12BRuntime,Get-Phase12BHostState,Get-Phase12BServiceForRunner,Get-Phase12BRunnerState,Test-Phase12BAclPolicy,Read-Phase12BConfig,Get-Phase12BGitHubRepositoryMetadata,Test-Phase12BWifCondition,Get-Phase12BExternalCallerState,Test-Phase12BExternalCallerState,Invoke-Phase12BAction,Test-Phase12BQuiescent,Assert-Phase12BRepositoryIdentity,Get-Phase12BCallerRunnerIdentity,Get-Phase12BOnboardPackageOperationId,Get-Phase12BFixedRunnerAdapterArguments,Get-Phase12BRunnerMetadataPath,Test-Phase12BMetadataIdentity,Read-Phase12BRunnerMetadata,Write-Phase12BRunnerMetadata,Get-Phase12BCallerRunnerClassification,Read-Phase12BHostConfig,Assert-Phase12BFixtureRoot,Read-Phase12BCallerRunnerFixture,Write-Phase12BCallerRunnerFixture,Get-Phase12BQuiescenceDecision,Get-Phase12BExecutionMutexState,Read-Phase12BCurrentRunState,Get-Phase12BGitHubActiveJobCount,Get-Phase12BResidualState,Wait-Phase12BCallerQuiescence,Get-Phase12BCallerRunnerObservation,Invoke-Phase12BCallerRunner,Get-Phase12BRunnerPackageContract,Test-Phase12BRunnerPackage,Test-Phase12BRunnerReleaseAsset,Get-Phase12BCompleteRunnerList,Get-Phase12BGitHubRunnerList,Test-Phase12BRunnerPackageTree,Assert-Phase12BRunnerStagingAuthority,Install-Phase12BRunnerPackageAtomically,Get-Phase12BMigrationRepositoryIdentityMatch,Get-Phase12BLegacyRunnerIdentityMatch,Test-Phase12BFileSha256,Get-Phase12BMigrationIntentPath,Test-Phase12BMigrationIntent,Read-Phase12BMigrationIntent,Write-Phase12BMigrationIntent,Initialize-Phase12BMigrationIntent,Get-Phase12BMigrationSourceState,Get-Phase12BMigrationRecoveryDecision,Test-Phase12BMigrationStageTopology,Invoke-Phase12BMigrationLifecycle
