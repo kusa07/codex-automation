@@ -319,3 +319,13 @@ write these roots; broad `Everyone` or `Users` write fallback is forbidden.
 Each active caller has a repository-scoped runner registration, while the
 Windows host, service identity, managed execution area, and Global Mutex remain
 shared infrastructure rather than an OS-level caller-isolation boundary.
+
+The official system PowerShell 7 dependency is pinned in public product
+policy: exact Microsoft PowerShell release/Windows x64 MSI URL, release asset
+digest, downloaded SHA-256, and valid Microsoft Authenticode publisher are
+required before installation. The installed `pwsh.exe` must be signed,
+64-bit, exact-version, non-reparse, in canonical Program Files, and present
+on the Machine PATH without an earlier shadowing `pwsh`. The runner Service
+remains NETWORK SERVICE and must retain its exact Service and GitHub runner
+identity after a bounded restart. User-profile PATH, arbitrary download URL,
+untrusted MSI, silent upgrade, and credential-copy fallback are forbidden.

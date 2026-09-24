@@ -98,10 +98,32 @@ and managed execution area, applies exact ACLs, and creates configured
 repository runners/services through the canonical caller lifecycle and fixed
 official GitHub runner provider.
 
+PowerShell 7 is a product-wide, system-level host dependency, not a private
+per-PC authority or a user-profile tool. The public policy pins official
+PowerShell/PowerShell `v7.6.6`, Windows x64 MSI, and SHA-256. Bootstrap checks
+this dependency before creating NEW host roots, using an ACL-controlled
+ProgramData bootstrap cache; an interrupted MSI operation therefore does not
+turn an otherwise NEW host into a partial Phase 12B topology. It does not
+change `setup-gcloud` to `skip_install`.
+
+An already managed host uses only `apply-system-runtime.ps1 -PrivateConfig ...`
+with an explicit `-Approve` to install this newly required dependency. Its
+credential-free intent freezes caller, immutable repository/runner ID, exact
+Service, and initial dispatch state. Durable stages fence dispatch, prove
+quiescence, verify the MSI, install, verify machine PATH, stop/start the same
+official NETWORK SERVICE Service, read back the same registration, restore the
+original dispatch state, and complete. The current apply implementation
+fails closed when more than one managed caller is configured; it never
+silently leaves another Service with a stale environment.
+
 `verify-host.ps1` is read-only. It reports CONFIG, HOST_RUNTIME,
 EXECUTION_AREA, MARKER, SCHEMA, SERVICE_IDENTITY, PROFILE, ACL, MUTEX_POLICY,
 WIF, CALLER_CONFIG, REPOSITORY_ID, Secret metadata, IAM, RUNNER,
 WINDOWS_SERVICE, and CALLER_WORKFLOW without reading a Secret payload.
+It also verifies the local PowerShell 7 executable, signed publisher, exact
+version/x64, and Machine PATH. This local check is not proof of the running
+Service process environment; a harmless job on the actual NETWORK SERVICE
+runner must independently prove `pwsh` resolution before production E2E.
 Each managed root must have inheritance disabled and exactly the three approved
 explicit FullControl ACEs; inherited or additional access fails verification.
 
