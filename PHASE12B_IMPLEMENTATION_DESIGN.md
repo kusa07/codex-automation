@@ -106,8 +106,21 @@ ProgramData bootstrap cache; an interrupted MSI operation therefore does not
 turn an otherwise NEW host into a partial Phase 12B topology. It does not
 change `setup-gcloud` to `skip_install`.
 
-An already managed host uses only `apply-system-runtime.ps1 -PrivateConfig ...`
-with an explicit `-Approve` to install this newly required dependency. Its
+Python 3.13.15 x64 is likewise a product-wide system dependency for the
+NETWORK SERVICE runner. The public host policy pins the official python.org
+Windows installer, SHA-256 and Python Software Foundation Authenticode signer;
+the all-users installation is fixed under Program Files and never placed on
+machine PATH. The workflow sets `CLOUDSDK_PYTHON` to that exact verified
+`python.exe` before the existing `setup-gcloud` action. `CLOUDSDK_CONFIG` is
+an ACL-restricted, run/attempt-owned directory under canonical `RUNNER_TEMP`,
+created before Google authentication and verified absent after always-run
+cleanup. The disabled Ubuntu connectivity job is outside this Windows host
+dependency; both active Windows jobs use the shared preparation and cleanup.
+
+An already managed host uses `apply-system-runtime.ps1 -PrivateConfig ...`
+with an explicit `-Approve` to install PowerShell 7. Python uses the separate
+`apply-system-python.ps1` entry with the same approval boundary. The
+PowerShell 7 apply's
 credential-free intent freezes caller, immutable repository/runner ID, exact
 Service, and initial dispatch state. Durable stages fence dispatch, prove
 quiescence, verify the MSI, install, verify machine PATH, stop/start the same

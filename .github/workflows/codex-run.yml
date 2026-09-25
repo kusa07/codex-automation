@@ -1550,6 +1550,10 @@ jobs:
           "${script_dir}/manage-execution-area.sh" ensure
           "${script_dir}/manage-execution-area.sh" preflight
 
+      - name: Prepare isolated Google Cloud CLI runtime
+        shell: pwsh
+        run: '& "${{ github.workspace }}/automation-source/scripts/host/manage-gcloud-run-config.ps1" -Action Prepare'
+
       - name: Authenticate to Google Cloud with direct WIF
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -1763,6 +1767,11 @@ jobs:
           fi
           echo "Self-hosted read-only validation cleanup passed"
 
+      - name: Remove isolated Google Cloud CLI config
+        if: always()
+        shell: pwsh
+        run: '& "${{ github.workspace }}/automation-source/scripts/host/manage-gcloud-run-config.ps1" -Action Cleanup'
+
   self-hosted-workspace-write-validation:
     name: Self-hosted controlled workspace-write and trusted publication validation
     if: ${{ inputs.validation_mode != true }}
@@ -1873,6 +1882,10 @@ jobs:
           script_dir="${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted"
           "${script_dir}/manage-execution-area.sh" ensure
           "${script_dir}/manage-execution-area.sh" preflight
+
+      - name: Prepare isolated Google Cloud CLI runtime
+        shell: pwsh
+        run: '& "${{ github.workspace }}/automation-source/scripts/host/manage-gcloud-run-config.ps1" -Action Prepare'
 
       - name: Authenticate to Google Cloud with direct WIF
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -2271,5 +2284,10 @@ jobs:
             "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/execution-result.sh" emit --code SELF_HOSTED_CLEANUP_FAILED
           fi
           echo "Self-hosted workspace-write validation cleanup passed"
+
+      - name: Remove isolated Google Cloud CLI config
+        if: always()
+        shell: pwsh
+        run: '& "${{ github.workspace }}/automation-source/scripts/host/manage-gcloud-run-config.ps1" -Action Cleanup'
 
 

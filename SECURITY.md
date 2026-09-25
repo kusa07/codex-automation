@@ -329,3 +329,16 @@ on the Machine PATH without an earlier shadowing `pwsh`. The runner Service
 remains NETWORK SERVICE and must retain its exact Service and GitHub runner
 identity after a bounded restart. User-profile PATH, arbitrary download URL,
 untrusted MSI, silent upgrade, and credential-copy fallback are forbidden.
+
+System Python is an independent pinned product dependency, not a caller
+credential or private desired-state override. Only the official Python
+3.13.15 Windows x64 installer with exact SHA-256 and valid PSF Authenticode
+publisher is accepted. It is installed for all users at the exact Program
+Files location without changing machine PATH/PATHEXT, installing a launcher,
+or relying on a personal profile. The job cannot install or update Python.
+`CLOUDSDK_PYTHON` names the verified executable; Google Cloud CLI remains
+managed by `setup-gcloud`. `CLOUDSDK_CONFIG` is per-run ephemeral state with
+restricted ACLs and ownership-checked cleanup; unknown or reparse residue
+fails closed. Local verification never substitutes for a real NETWORK SERVICE
+Service-context execution proof. No Google credential, Secret payload, or
+runner token is persisted in either runtime intent.
