@@ -223,6 +223,22 @@ Candidate payloads, hashes, and authentication status output are not logged. Run
 
 An interruption before the previous version is disabled may leave both the previous version and a candidate enabled. The next run must fail preflight because multiple enabled versions are ambiguous.
 
+For a trusted operator recovery with two known enabled versions, the reusable
+workflow exposes `candidate_auth_validation_mode`. It is diagnostic only and
+cannot be combined with the normal read-only or workspace-write modes. It
+requires exactly two distinct numeric enabled versions, retrieves each exact
+version, and executes a minimal read-only Codex request for each in separate
+isolated homes under the managed execution lock. Logs contain only each numeric
+version's fixed PASS/FAIL category. It does not change Secret Manager state.
+Normal jobs continue to require exactly one enabled version. The operator
+compares the reported numeric IDs with the recorded candidate and previous
+version before any separate adoption decision. `AUTH_PROBE_COMPLETE=true`
+confirms both exact versions were probed, a fresh read-back found the same two
+enabled versions, and managed cleanup passed. The diagnostic job can complete
+even when both authentication probes fail. The recorded candidate's exact
+`RESULT=PASS` marker is required separately for adoption; job success alone
+is never candidate-authentication evidence.
+
 Do not automatically repair this state and do not choose the newest or `latest` version. An operator must inspect non-payload version metadata, identify the known-good state through an explicit recovery procedure, and restore the one-enabled-version invariant. Secret payloads and `auth.json` must not be printed during recovery.
 
 ## 5. Codex failure
