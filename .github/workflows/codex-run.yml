@@ -1975,6 +1975,21 @@ jobs:
           final_sha=""
           prepared=0
           result_code='UNKNOWN_FAILURE'
+          record_codex_failure() {
+            local category="$1" exit_code="$2" stage="$3"
+            case "${category}" in
+              CODEX_CLI_NONZERO|CODEX_RESULT_FILE_MISSING|CODEX_AUTH_HASH_MISMATCH) ;;
+              *) category='CODEX_EXECUTION_UNCLASSIFIED' ;;
+            esac
+            case "${stage}" in
+              codex_execution|result_file_validation|auth_hash_validation) ;;
+              *) stage='codex_execution' ;;
+            esac
+            [[ "${exit_code}" =~ ^[0-9]+$ ]] || exit_code=1
+            printf '%s\n' "CODEX_FAILURE_CATEGORY=${category}"
+            printf '%s\n' "CODEX_FAILURE_EXIT_CODE=${exit_code}"
+            printf '%s\n' "CODEX_FAILURE_STAGE=${stage}"
+          }
           cleanup() {
             status=$?
             set +e
@@ -2098,11 +2113,28 @@ jobs:
             :
           else
             codex_exit=$?
-            result_code="$(bash "${automation_source}/scripts/self-hosted/classify-codex-failure.sh" "${stderr_file}")"
+            classified_code="$(bash "${automation_source}/scripts/self-hosted/classify-codex-failure.sh" "${stderr_file}")"
+            case "${classified_code}" in
+              CODEX_AUTH_FAILED|CODEX_MODEL_OR_SERVICE_FAILED|CODEX_NETWORK_OR_TRANSPORT_FAILED|CODEX_SANDBOX_OR_PERMISSION_FAILED|CODEX_CLI_OR_CONFIGURATION_FAILED|CODEX_EXECUTION_FAILED)
+                result_code="${classified_code}"
+                ;;
+              *)
+                result_code='CODEX_EXECUTION_FAILED'
+                ;;
+            esac
+            printf '%s\n' "CODEX_FAILURE_CLASSIFICATION=${result_code}"
+            record_codex_failure CODEX_CLI_NONZERO "${codex_exit}" codex_execution
             exit "${codex_exit}"
           fi
-          [[ -s "${result_file}" ]] || exit 1
-          [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" == "$(<"${auth_hash_file}")" ]] || exit 1
+          if [[ ! -s "${result_file}" ]]; then
+            record_codex_failure CODEX_RESULT_FILE_MISSING 1 result_file_validation
+            exit 1
+          fi
+          if [[ "$(sha256sum "${codex_home}/auth.json" | cut -d ' ' -f 1)" != "$(<"${auth_hash_file}")" ]]; then
+            result_code='CODEX_AUTH_FAILED'
+            record_codex_failure CODEX_AUTH_HASH_MISMATCH 1 auth_hash_validation
+            exit 1
+          fi
           result_code='WORKSPACE_VALIDATION_FAILED'
           printf '%s\n' 'WRITE_STAGE=codex_execution_complete'
           printf '%s\n' 'WRITE_STAGE=post_codex_validation_start'

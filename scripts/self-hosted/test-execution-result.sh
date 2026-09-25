@@ -58,6 +58,16 @@ grep -F 'if ! gcloud secrets versions list' "$workflow" >/dev/null
 grep -F "result_code='SECRET_READ_FAILED'" "$workflow" >/dev/null
 grep -F 'enabled_versions_file' "$workflow" >/dev/null
 grep -F 'classify-codex-failure.sh' "$workflow" >/dev/null
+grep -F 'CODEX_FAILURE_CATEGORY=${category}' "$workflow" >/dev/null
+grep -F 'CODEX_FAILURE_EXIT_CODE=${exit_code}' "$workflow" >/dev/null
+grep -F 'CODEX_FAILURE_STAGE=${stage}' "$workflow" >/dev/null
+grep -F 'CODEX_FAILURE_CLASSIFICATION=${result_code}' "$workflow" >/dev/null
+grep -F 'record_codex_failure CODEX_CLI_NONZERO "${codex_exit}" codex_execution' "$workflow" >/dev/null
+grep -F 'record_codex_failure CODEX_RESULT_FILE_MISSING 1 result_file_validation' "$workflow" >/dev/null
+grep -F 'record_codex_failure CODEX_AUTH_HASH_MISMATCH 1 auth_hash_validation' "$workflow" >/dev/null
+grep -F 'case "${classified_code}" in' "$workflow" >/dev/null
+grep -F 'CODEX_AUTH_FAILED|CODEX_MODEL_OR_SERVICE_FAILED|CODEX_NETWORK_OR_TRANSPORT_FAILED|CODEX_SANDBOX_OR_PERMISSION_FAILED|CODEX_CLI_OR_CONFIGURATION_FAILED|CODEX_EXECUTION_FAILED)' "$workflow" >/dev/null
+! grep -F 'printf "%s\\n" "${stderr_file}"' "$workflow" >/dev/null
 ! grep -F "|token'" "$workflow" >/dev/null
 grep -F 'set +e' "$workflow" >/dev/null
 grep -F 'cleanup_failed=1' "$workflow" >/dev/null
