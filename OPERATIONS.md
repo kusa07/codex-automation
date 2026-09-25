@@ -655,6 +655,26 @@ The next task must be prepared from the execution plan plus the actual result of
 
 ## Phase 12B operator plans
 
+For an already managed Phase 12B host missing the product-wide PowerShell 7
+dependency, run `scripts/host/apply-system-runtime.ps1 -PrivateConfig <private
+environment.yaml>` in plan mode, then use `-Approve` only after exact host,
+caller, runner, Service, workflow, and quiescence grounding. This is not a
+Batch C migration rerun. It uses a durable intent under the managed runtime
+root, fences dispatch, verifies the official pinned Microsoft MSI digest and
+Authenticode publisher, installs with no auto-update/reboot, restarts only the
+same exact Service, verifies the original runner ID, and restores precisely
+the prior dispatch state. A reboot-required MSI result, unknown package
+residue, mismatched installation, PATH shadowing, or more than one configured
+caller stops rather than broadening the operation. Do not manually remove
+intent or caches as part of normal retry.
+
+`verify-host.ps1` reports local PowerShell 7 and Machine PATH status but does
+not prove the Service process PATH. Before retrying a failed `setup-gcloud`
+E2E, run a safe GitHub job on the same repository-scoped NETWORK SERVICE
+runner to prove `pwsh` resolution, then a bounded validation-mode job for
+`setup-gcloud` and WIF. Do not use a user-profile `pwsh` or system-wide
+`gcloud` with `skip_install` as a substitute.
+
 Caller onboarding, offboarding, workflow synchronization, host bootstrap, and
 host migration first classify the current state and emit a consolidated plan.
 They require one explicit operator approval before any mutation. `NEW` and

@@ -1045,3 +1045,11 @@ Execution Area の schema member ではない。`C:\ProgramData\CodexAutomation`
 identity、runner root、execution root、ACL policy の変更は quiescence を
 確認する明示的な migration として扱い、partial または ambiguous state を
 自動修復しない。
+
+NETWORK SERVICE runner の machine-wide PowerShell 7 は Phase 12B host
+dependency として public policy で version / MSI SHA-256 を pin する。
+通常の runner identity / registration を変更せず、managed host の追加適用は
+dispatch fence、quiescence、official package 検証、MSI install、Machine PATH
+検証、exact Service restart / read-back、dispatch restore を durable intent
+で行う。`verify-host` の local verification は Service context の証明ではない。
+実際の runner job で `pwsh` 解決を別途検証する。

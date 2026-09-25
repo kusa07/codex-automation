@@ -130,6 +130,21 @@ if "%q%"==".runner.scope" echo repository
   & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -AdapterLog $log -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null
   $ordered=(Get-Content -LiteralPath $log -Raw);foreach($stage in 'EnsureDirectory','WriteRuntime','EnsureExecutionArea','ApplyAcl'){if($ordered -notmatch "ACTION=$stage"){throw "NEW bootstrap host stage missing: $stage"}}
   $bootstrapMetadata=Read-Phase12BRunnerMetadata -RuntimeRoot $runtime -RepositoryId 12345 -RepositoryFullName kusa07/example -RunnerRoot $runnerRoot;if($bootstrapMetadata.lifecycle_state -ne 'ACTIVE'){throw 'bootstrap did not create canonical ACTIVE metadata'}
+  # Production-shaped existing-host apply: the same CLI constructs canonical
+  # Host/Caller/Service/runner identities; only external reads/mutations are
+  # replaced by a bounded fixture provider.
+  $runtimeReadback=Join-Path $root 'runtime-readback.json'
+  $applyFixture=[ordered]@{schema=1;repository_id='12345';repository_full_name='kusa07/example';runner_id='22';runner_name='codex-repo-12345';runner_online_idle=$true;service_name='actions.runner.kusa07-example.codex-repo-12345';service_identity='NT AUTHORITY\NETWORK SERVICE';service_state='Running';workflow_exact=$true;dispatch_state='active';quiescent=$true;quiescence_reason='NO_CURRENT_EXECUTION';package_verified=$false;unknown_state=$false;fail_action='';runtime_observation=[ordered]@{DirectoryPresent=$false;DirectoryIsContainer=$false;DirectoryNonReparse=$true;LeafPresent=$false;LeafNonReparse=$true;SignatureValid=$false;Version='';X64=$false;MachinePath='MISSING'};mutation_calls=@()}
+  $applyFixture|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $runtimeReadback -NoNewline
+  $otherCaller=$applyFixture|ConvertTo-Json -Depth 8|ConvertFrom-Json;$otherCaller.quiescence_reason='OTHER_CALLER_EXECUTION';$otherCaller|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $runtimeReadback -NoNewline
+  Assert-Throws {& (Join-Path $PSScriptRoot 'apply-system-runtime.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -RuntimeReadbackFile $runtimeReadback|Out-Null} 'Machine-wide runtime change accepted another caller execution.'
+  if(Test-Path -LiteralPath (Join-Path $runtime 'system-runtime\powershell7-intent.json')){throw 'Other-caller execution created runtime intent.'}
+  $applyFixture|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $runtimeReadback -NoNewline
+  & (Join-Path $PSScriptRoot 'apply-system-runtime.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -RuntimeReadbackFile $runtimeReadback|Out-Null
+  $applyAfter=Get-Content -LiteralPath $runtimeReadback -Raw|ConvertFrom-Json
+  foreach($action in @('FenceDispatch','VerifyPackage','InstallRuntime','StopService','StartService','RestoreDispatch')){if($action -notin @($applyAfter.mutation_calls)){throw "Production-shaped runtime apply omitted $action."}}
+  if([string]$applyAfter.runner_id -cne '22' -or [string]$applyAfter.service_identity -cne 'NT AUTHORITY\NETWORK SERVICE' -or [string]$applyAfter.dispatch_state -cne 'active'){throw 'Production-shaped runtime apply changed runner, Service, or dispatch authority.'}
+  Assert-Throws {& (Join-Path $PSScriptRoot 'apply-system-runtime.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -RuntimeReadbackFile $runtimeReadback|Out-Null} 'Production runtime apply accepted fixture injection.'
   Assert-Throws { & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -AdapterLog $log -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null } 'production path accepted AdapterLog'
   $env:PHASE12B_TEST_ADAPTER='1';Assert-Throws { & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') } 'environment-only test adapter activation accepted';Remove-Item Env:PHASE12B_TEST_ADAPTER
   # Synthetic existing host makes migration prove it grounds and passes its actual service name to the adapter.
