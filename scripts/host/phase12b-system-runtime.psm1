@@ -101,7 +101,7 @@ function Get-Phase12BSystemRuntimeState {
             $signatureValid = Test-Phase12BMicrosoftSignature -Path $policy.Executable
             if ($signatureValid) {
                 try {
-                    $raw = & $policy.Executable -NoLogo -NoProfile -NonInteractive -Command '[string]$PSVersionTable.PSVersion.ToString() + ";" + [string][Environment]::Is64BitProcess' 2>$null
+                    $raw = & $policy.Executable -NoLogo -NoProfile -NonInteractive -Command '[string]$PSVersionTable.PSVersion.ToString() + [char]59 + [string][Environment]::Is64BitProcess' 2>$null
                     if ($LASTEXITCODE -ne 0) { throw 'pwsh failed' }
                     $parts = ([string]($raw | Select-Object -Last 1)) -split ';'
                     if ($parts.Count -eq 2) { $version = $parts[0]; $x64 = $parts[1] -ceq 'True' }
