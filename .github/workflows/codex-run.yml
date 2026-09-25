@@ -29,6 +29,11 @@ on:
         required: false
         default: false
         type: boolean
+      candidate_auth_validation_mode:
+        description: Probe both enabled caller authentication versions in the self-hosted service context without adopting either
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   connectivity-test:
@@ -1463,9 +1468,167 @@ jobs:
           fi
           echo "Temporary authentication files removed"
 
+  reject-incompatible-validation-modes:
+    if: ${{ inputs.candidate_auth_validation_mode == true && (inputs.validation_mode == true || inputs.workspace_write_validation_mode == true) }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Reject combined authentication diagnostic and task modes
+        run: |
+          echo 'Candidate authentication diagnostic cannot run with another validation mode' >&2
+          exit 1
+
+  self-hosted-candidate-auth-validation:
+    name: Complete self-hosted candidate authentication diagnostic
+    if: ${{ inputs.candidate_auth_validation_mode == true && inputs.validation_mode != true && inputs.workspace_write_validation_mode != true }}
+    runs-on: [self-hosted, Windows, X64, codex-automation]
+    concurrency:
+      group: codex-${{ github.repository_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
+      CONNECTIVITY_SECRET_ID: ${{ inputs.codex_auth_secret_id }}
+      CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
+      CODEX_VERSION: 0.148.0
+    defaults:
+      run:
+        shell: C:\PROGRA~1\Git\bin\bash.exe --noprofile --norc -e -o pipefail "{0}"
+    steps:
+      - name: Checkout immutable automation helpers without persisted credentials
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: automation-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify immutable automation source
+        env:
+          EXPECTED_WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          EXPECTED_WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_WORKFLOW_REPOSITORY}" == "kusa07/codex-automation" ]] || exit 1
+          actual_origin="$(git -C "${GITHUB_WORKSPACE}/automation-source" remote get-url origin)"
+          actual_origin="${actual_origin%.git}"
+          case "${actual_origin}" in
+            https://github.com/kusa07/codex-automation|git@github.com:kusa07/codex-automation) ;;
+            *) exit 1 ;;
+          esac
+          [[ "$(git -C "${GITHUB_WORKSPACE}/automation-source" rev-parse HEAD)" == "${EXPECTED_WORKFLOW_SHA}" ]] || exit 1
+
+      - name: Verify managed execution area
+        run: |
+          set -euo pipefail
+          "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/manage-execution-area.sh" preflight
+
+      - name: Prepare isolated Google Cloud CLI runtime
+        shell: pwsh
+        run: '& "${{ github.workspace }}/automation-source/scripts/host/manage-gcloud-run-config.ps1" -Action Prepare'
+
+      - name: Authenticate to Google Cloud with direct WIF
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          workload_identity_provider: ${{ inputs.workload_identity_provider }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ inputs.google_cloud_project_id }}
+          version: ">= 363.0.0"
+
+      - name: Relocate temporary Google credential outside automation checkout
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ -n "${GOOGLE_GHA_CREDS_PATH:-}" ]] || {
+            echo 'Google credential file is unavailable' >&2
+            exit 1
+          }
+          credentials_posix="$(cygpath -u -- "${GOOGLE_GHA_CREDS_PATH}")"
+          workspace_posix="$(cygpath -u -- "${GITHUB_WORKSPACE}")"
+          runner_temp_posix="$(cygpath -u -- "${RUNNER_TEMP}")"
+          relocated_credentials_posix="${runner_temp_posix}/codex-candidate-google-credentials-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          relocated_credentials_windows="$(cygpath -aw -- "${relocated_credentials_posix}")"
+          [[ -f "${credentials_posix}" && "${credentials_posix}" == "${workspace_posix}"/* && ! -L "${credentials_posix}" ]] || {
+            echo 'Google credential location is unexpected' >&2
+            exit 1
+          }
+          [[ ! -e "${relocated_credentials_posix}" && ! -L "${relocated_credentials_posix}" ]] || exit 1
+          printf '%s\n' 'CANDIDATE_GOOGLE_CREDS_CREATED=true' >> "${GITHUB_ENV}"
+          install -m 600 -- "${credentials_posix}" "${relocated_credentials_posix}"
+          rm -f -- "${credentials_posix}"
+          {
+            printf 'GOOGLE_GHA_CREDS_PATH=%s\n' "${relocated_credentials_windows}"
+            printf 'GOOGLE_APPLICATION_CREDENTIALS=%s\n' "${relocated_credentials_windows}"
+            printf 'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=%s\n' "${relocated_credentials_windows}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Probe both authentication versions under local Mutex
+        run: |
+          set -euo pipefail
+          probe_status_file="$(cygpath -u -- "${RUNNER_TEMP}")/codex-candidate-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.status"
+          [[ ! -e "${probe_status_file}" && ! -L "${probe_status_file}" ]] || {
+            echo 'Candidate probe status residue exists' >&2
+            exit 1
+          }
+          printf '%s\n' 'CANDIDATE_PROBE_STATUS_CREATED=true' >> "${GITHUB_ENV}"
+          if "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/run-local-execution.sh" run \
+            --repository-id "${GITHUB_REPOSITORY_ID}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --payload-path "C:/Program Files/Git/bin/bash.exe" \
+            --payload-arg "$(cygpath -aw "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/probe-candidate-auth.sh")" \
+            --payload-arg "$(cygpath -aw "${GITHUB_WORKSPACE}/automation-source")"; then
+            printf '%s\n' PASS > "${probe_status_file}"
+          else
+            probe_exit=$?
+            printf '%s\n' FAIL > "${probe_status_file}"
+            exit "${probe_exit}"
+          fi
+
+      - name: Verify diagnostic cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          runner_temp_posix="$(cygpath -u -- "${RUNNER_TEMP}")"
+          probe_status_file="${runner_temp_posix}/codex-candidate-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.status"
+          relocated_credentials_posix="${runner_temp_posix}/codex-candidate-google-credentials-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          probe_passed=false
+          if [[ -f "${probe_status_file}" && "$(<"${probe_status_file}")" == PASS ]]; then
+            probe_passed=true
+          fi
+          if [[ "${CANDIDATE_PROBE_STATUS_CREATED:-}" == true ]]; then
+            rm -f -- "${probe_status_file}"
+          fi
+          if [[ "${CANDIDATE_GOOGLE_CREDS_CREATED:-}" == true ]]; then
+            rm -f -- "${relocated_credentials_posix}"
+          fi
+          "${GITHUB_WORKSPACE}/automation-source/scripts/self-hosted/manage-execution-area.sh" preflight
+          [[ "${probe_passed}" == true ]] || exit 1
+          printf '%s\n' 'CANDIDATE_PROBE_CLEANUP_PASSED=true' >> "${GITHUB_ENV}"
+          echo 'Candidate authentication diagnostic cleanup passed'
+
+      - name: Remove isolated Google Cloud CLI config
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "${{ github.workspace }}/automation-source/scripts/host/manage-gcloud-run-config.ps1" -Action Cleanup
+          if ($env:CANDIDATE_PROBE_CLEANUP_PASSED -ne 'true') { throw 'Candidate authentication diagnostic did not complete.' }
+          Write-Output 'AUTH_PROBE_COMPLETE=true'
+
   self-hosted-read-only-validation:
     name: Self-hosted isolated Local Codex read-only validation
-    if: ${{ inputs.validation_mode == true && inputs.workspace_write_validation_mode != true }}
+    if: ${{ inputs.validation_mode == true && inputs.workspace_write_validation_mode != true && inputs.candidate_auth_validation_mode != true }}
     runs-on: [self-hosted, Windows, X64, codex-automation]
     concurrency:
       group: codex-${{ github.repository_id }}
@@ -1774,7 +1937,7 @@ jobs:
 
   self-hosted-workspace-write-validation:
     name: Self-hosted controlled workspace-write and trusted publication validation
-    if: ${{ inputs.validation_mode != true }}
+    if: ${{ inputs.validation_mode != true && inputs.candidate_auth_validation_mode != true }}
     runs-on: [self-hosted, Windows, X64, codex-automation]
     concurrency:
       group: codex-${{ github.repository_id }}

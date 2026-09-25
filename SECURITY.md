@@ -145,6 +145,19 @@ Codex may update authentication state while running.
 
 At normal run start, exactly one Secret Manager version must be enabled. Zero enabled versions or multiple enabled versions are ambiguous states and must fail closed. The workflow records the numeric authoritative version ID and reads that exact version; it must not select the authoritative state through `latest`.
 
+The explicitly requested candidate-authentication diagnostic is separate from
+normal execution. Only that mode may proceed with exactly two distinct enabled
+numeric versions. It probes both exact versions under the self-hosted Mutex with
+the pinned Codex CLI and isolated read-only runtimes. The diagnostic reports
+only version IDs and fixed result categories; it does not choose an
+authoritative version, disable or add Secret versions, publish source, or make
+the multiple-enabled state valid for normal jobs. An operator must validate
+and explicitly adopt a candidate before restoring the one-enabled invariant.
+Diagnostic job success means both versions were probed, the enabled-version
+set was unchanged on authoritative post-read-back, and cleanup passed. It does
+not mean either version passed authentication. Candidate adoption requires the
+recorded candidate's exact numeric ID to have its own `RESULT=PASS` marker.
+
 Before execution, the automation records a SHA-256 digest of `auth.json` without logging the credential or its digest.
 
 After execution:

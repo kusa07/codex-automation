@@ -127,6 +127,13 @@ The shared workflow retrieves the Issue from the caller repository and validates
 
 Infrastructure details such as raw `auth.json`, Google credentials, Secret Manager implementation details, Self-hosted Execution directory paths, local lock state, or local Codex runtime details must not be passed from the application repository as ordinary workflow data.
 
+The optional `candidate_auth_validation_mode` boolean only selects a bounded
+shared diagnostic. The caller does not supply a Secret version ID, credential,
+runtime path, or authentication policy. The shared workflow obtains and probes
+both enabled numeric versions through its own Secret Manager and self-hosted
+execution boundary. Production Issue execution and normal validation remain
+mutually exclusive with this diagnostic mode.
+
 Phase 10 does not introduce an `executor`, `runner_profile`, or equivalent caller input merely to support the first Self-hosted / Local Codex path. Executor abstraction remains a future concern unless separately approved.
 
 ## 8. Outputs
