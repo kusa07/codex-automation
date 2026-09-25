@@ -1053,3 +1053,13 @@ dispatch fence、quiescence、official package 検証、MSI install、Machine PA
 検証、exact Service restart / read-back、dispatch restore を durable intent
 で行う。`verify-host` の local verification は Service context の証明ではない。
 実際の runner job で `pwsh` 解決を別途検証する。
+
+Phase 12B host は、Google Cloud CLI 起動用の system-wide Python 3.13.15
+Windows x64 も管理する。Python.org 公式 installer の exact SHA-256 と PSF
+Authenticode 署名を確認し、Program Files に all-users で pin して導入する。
+workflow は既存 `setup-gcloud` を維持し、検証済み `python.exe` の exact path
+を `CLOUDSDK_PYTHON` に設定する。`CLOUDSDK_CONFIG` は run/attempt 毎の
+runner temp 内に限定し、NETWORK SERVICE / SYSTEM / Administrators の
+ACL に保護して job 終了時に ownership/reparse を確認して削除する。
+host の local verify と実際の NETWORK SERVICE Service-context proof は
+別の検証である。通常 job 中の Python install や UAC は行わない。

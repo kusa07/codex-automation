@@ -675,6 +675,28 @@ runner to prove `pwsh` resolution, then a bounded validation-mode job for
 `setup-gcloud` and WIF. Do not use a user-profile `pwsh` or system-wide
 `gcloud` with `skip_install` as a substitute.
 
+For a managed host missing Python, use `scripts/host/apply-system-python.ps1`
+first in plan mode and then with `-Approve` only after exact read-back. This is
+a distinct `SYSTEM_PYTHON313` intent/cache, sharing the durable dispatch fence,
+quiescence, Service restart and recovery lifecycle with PowerShell 7. The
+official Python 3.13.15 x64 installer is verified by pinned SHA-256 and PSF
+Authenticode signer. All-users installation targets the exact Program Files
+path with no PATH/PATHEXT change, launcher, pip, or optional downloaded
+components. A partial or unexpected install, cache residue, changed machine
+PATH, incomplete PowerShell runtime intent, or contradictory runner/Service
+identity is a stop; never clean or adopt it as part of normal apply. NEW host
+bootstrap supplies both runtimes before creating host roots.
+
+`verify-host.ps1` checks the local exact Python path, version, x64 signature,
+non-reparse status and PATH isolation, but cannot prove NETWORK SERVICE
+execution. An actual credential-free Service job must prove the same executable
+and `gcloud --version` before WIF/Secret validation. The two active Windows
+workflow paths keep `setup-gcloud`; each prepares a run/attempt-specific
+`CLOUDSDK_CONFIG` under canonical runner temp before authentication and performs
+always-run ownership/ACL/reparse-checked cleanup. Unknown config residue is
+not silently adopted or deleted. Preparation also clears inherited Python
+search-path/interpreter flags and disables the user site directory for gcloud.
+
 Caller onboarding, offboarding, workflow synchronization, host bootstrap, and
 host migration first classify the current state and emit a consolidated plan.
 They require one explicit operator approval before any mutation. `NEW` and

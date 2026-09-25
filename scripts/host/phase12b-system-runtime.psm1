@@ -191,7 +191,8 @@ function Invoke-Phase12BSystemRuntimeLifecycle {
           [Parameter(Mandatory)][string]$InitialDispatchState,
           [Parameter(Mandatory)][scriptblock]$Read,
           [Parameter(Mandatory)][scriptblock]$Mutate,
-          [Parameter(Mandatory)][scriptblock]$Save)
+          [Parameter(Mandatory)][scriptblock]$Save,
+          [ValidateSet('PowerShell7','Python313')][string]$RuntimeKind = 'PowerShell7')
     $stages = @('PLANNED','FENCING','FENCED','QUIESCENCE_CHECKING','QUIESCENT','PACKAGE_VERIFYING','PACKAGE_VERIFIED','INSTALLING','INSTALLED','PATH_VERIFIED','SERVICE_STOPPING','SERVICE_STOPPED','SERVICE_STARTING','SERVICE_STARTED','RUNTIME_VERIFIED','DISPATCH_RESTORING','DISPATCH_RESTORED','COMPLETE')
     if ($InitialStage -notin $stages -or $InitialDispatchState -notin @('active','disabled_manually')) { throw 'Runtime lifecycle intent is invalid.' }
     $stage = $InitialStage
@@ -200,7 +201,8 @@ function Invoke-Phase12BSystemRuntimeLifecycle {
     $actual = State
     if (-not $actual.IdentityExact -or -not $actual.ServiceExact -or -not $actual.WorkflowExact -or $actual.UnknownState) { throw 'Runtime dependency authority changed or is unknown.' }
     if ($stage -eq 'COMPLETE') {
-        if ($actual.RuntimeClassification -ne 'EXACT' -or $actual.ServiceState -ne 'Running' -or -not $actual.RunnerOnlineIdle -or $actual.DispatchState -cne $InitialDispatchState) { throw 'Completed runtime postcondition is not exact.' }
+        if ($actual.RuntimeClassification -ne 'EXACT' -or $actual.ServiceState -ne 'Running' -or -not $actual.RunnerOnlineIdle -or $actual.DispatchState -cne $InitialDispatchState -or
+            ($RuntimeKind -eq 'Python313' -and $actual.PathIsolation -ne 'ISOLATED')) { throw 'Completed runtime postcondition is not exact.' }
         return 'COMPLETE'
     }
     if ($stage -eq 'PLANNED') { Advance 'FENCING' }
@@ -243,7 +245,9 @@ function Invoke-Phase12BSystemRuntimeLifecycle {
     }
     if ($stage -eq 'INSTALLED') {
         $actual = State
-        if ($actual.RuntimeClassification -ne 'EXACT' -or $actual.MachinePath -ne 'EXACT') { throw 'Machine PATH is not exact.' }
+        if ($actual.RuntimeClassification -ne 'EXACT') { throw 'System runtime is not exact.' }
+        if ($RuntimeKind -eq 'PowerShell7' -and $actual.MachinePath -ne 'EXACT') { throw 'Machine PATH is not exact.' }
+        if ($RuntimeKind -eq 'Python313' -and $actual.PathIsolation -ne 'ISOLATED') { throw 'Python PATH isolation is not exact.' }
         Advance 'PATH_VERIFIED'
     }
     if ($stage -eq 'PATH_VERIFIED') { Advance 'SERVICE_STOPPING' }

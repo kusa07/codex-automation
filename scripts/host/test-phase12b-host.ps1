@@ -145,6 +145,27 @@ if "%q%"==".runner.scope" echo repository
   foreach($action in @('FenceDispatch','VerifyPackage','InstallRuntime','StopService','StartService','RestoreDispatch')){if($action -notin @($applyAfter.mutation_calls)){throw "Production-shaped runtime apply omitted $action."}}
   if([string]$applyAfter.runner_id -cne '22' -or [string]$applyAfter.service_identity -cne 'NT AUTHORITY\NETWORK SERVICE' -or [string]$applyAfter.dispatch_state -cne 'active'){throw 'Production-shaped runtime apply changed runner, Service, or dispatch authority.'}
   Assert-Throws {& (Join-Path $PSScriptRoot 'apply-system-runtime.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -RuntimeReadbackFile $runtimeReadback|Out-Null} 'Production runtime apply accepted fixture injection.'
+  $pythonReadback=Join-Path $root 'python-readback.json'
+  $pythonFixture=$applyFixture|ConvertTo-Json -Depth 8|ConvertFrom-Json
+  $pythonFixture.runtime_observation.PSObject.Properties.Remove('MachinePath')
+  $pythonFixture.runtime_observation|Add-Member -NotePropertyName PathIsolated -NotePropertyValue $true
+  $pythonFixture|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $pythonReadback -NoNewline
+  & (Join-Path $PSScriptRoot 'apply-system-python.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -RuntimeReadbackFile $pythonReadback|Out-Null
+  $pythonAfter=Get-Content -LiteralPath $pythonReadback -Raw|ConvertFrom-Json
+  foreach($action in @('FenceDispatch','VerifyPackage','InstallRuntime','StopService','StartService','RestoreDispatch')){if($action -notin @($pythonAfter.mutation_calls)){throw "Production-shaped Python apply omitted $action."}}
+  if([string]$pythonAfter.runner_id -cne '22' -or [string]$pythonAfter.dispatch_state -cne 'active' -or [string]$pythonAfter.runtime_observation.Version -cne '3.13.15'){throw 'Python apply changed runner/dispatch identity or missed exact version.'}
+  $pythonIntentPath=Join-Path $runtime 'system-python\python313-intent.json'
+  $pythonIntent=Get-Content -LiteralPath $pythonIntentPath -Raw|ConvertFrom-Json
+  $originalPathHash=$pythonIntent.machine_path_sha256
+  $pythonIntent.machine_path_sha256='0'*64
+  $pythonIntent|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $pythonIntentPath -NoNewline
+  $pythonAfter.mutation_calls=@()
+  $pythonAfter|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $pythonReadback -NoNewline
+  Assert-Throws {& (Join-Path $PSScriptRoot 'apply-system-python.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -TestMode -FixtureRoot $root -RuntimeReadbackFile $pythonReadback|Out-Null} 'Changed machine PATH hash was allowed before Python resume mutation.'
+  if(@((Get-Content -LiteralPath $pythonReadback -Raw|ConvertFrom-Json).mutation_calls).Count -ne 0){throw 'PATH mismatch triggered Python provider mutation.'}
+  $pythonIntent.machine_path_sha256=$originalPathHash
+  $pythonIntent|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $pythonIntentPath -NoNewline
+  Assert-Throws {& (Join-Path $PSScriptRoot 'apply-system-python.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -RuntimeReadbackFile $pythonReadback|Out-Null} 'Production Python apply accepted fixture injection.'
   Assert-Throws { & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') -Approve -AdapterLog $log -ExternalReadbackFile (Join-Path $root 'external.json') -ServiceReadbackFile (Join-Path $root 'services.json')|Out-Null } 'production path accepted AdapterLog'
   $env:PHASE12B_TEST_ADAPTER='1';Assert-Throws { & (Join-Path $PSScriptRoot 'bootstrap-host.ps1') -PrivateConfig (Join-Path $root 'environment.yaml') } 'environment-only test adapter activation accepted';Remove-Item Env:PHASE12B_TEST_ADAPTER
   # Synthetic existing host makes migration prove it grounds and passes its actual service name to the adapter.

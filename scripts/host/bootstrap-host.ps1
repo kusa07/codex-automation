@@ -12,10 +12,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'phase12b-host.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'phase12b-system-runtime.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'phase12b-system-python.psm1') -Force
 Test-Phase12BTestAdapter -TestMode:$TestMode -FixtureRoot $FixtureRoot -AdapterLog $AdapterLog -ExternalReadbackFile $ExternalReadbackFile -ServiceReadbackFile $ServiceReadbackFile
 $cfg=Read-Phase12BConfig $PrivateConfig;$h=$cfg.Host
 $state=Get-Phase12BHostState -RuntimeRoot $h.runtime_root -ExecutionRoot $h.execution_root -HostId $h.host_id -ProfileRoot $h.profile_root -RunnerRoot $h.runner_root
 $runtimeFixture=if($TestMode){Join-Path $FixtureRoot 'system-runtime-fixture.json'}else{''}
+$pythonFixture=if($TestMode){Join-Path $FixtureRoot 'system-python-fixture.json'}else{''}
 function Read-SystemRuntimeDependency {
     if(-not $TestMode){return Get-Phase12BSystemRuntimeState}
     if(-not(Test-Path -LiteralPath $runtimeFixture -PathType Leaf)){return Get-Phase12BSystemRuntimeState -Observation ([pscustomobject]@{DirectoryPresent=$false;DirectoryIsContainer=$false;DirectoryNonReparse=$true;LeafPresent=$false;LeafNonReparse=$true;SignatureValid=$false;Version='';X64=$false;MachinePath='MISSING'})}
@@ -32,18 +34,34 @@ function Install-SystemRuntimeDependency {
     }
     if(-not(Test-Phase12BNoReparse $bootstrapCache)){throw 'Bootstrap dependency cache path is unsafe.'}
     if(-not(Test-Phase12BAclPolicy -Acl (Get-Acl -LiteralPath $bootstrapCache))){throw 'Bootstrap dependency cache ACL is not exact.'}
-    $entries=@(Get-ChildItem -LiteralPath $bootstrapCache -Force -ErrorAction Stop|Where-Object{$_.Name -ne 'packages'})
+    $entries=@(Get-ChildItem -LiteralPath $bootstrapCache -Force -ErrorAction Stop|Where-Object{$_.Name -cnotin @('packages','python')})
     if($entries.Count -ne 0){throw 'Bootstrap dependency cache contains unknown entries.'}
     Install-Phase12BSystemRuntime -RuntimeRoot $bootstrapCache|Out-Null
 }
+function Read-SystemPythonDependency {
+    if(-not $TestMode){return Get-Phase12BSystemPythonState}
+    if(-not(Test-Path -LiteralPath $pythonFixture -PathType Leaf)){return Get-Phase12BSystemPythonState -Observation ([pscustomobject]@{DirectoryPresent=$false;DirectoryIsContainer=$false;DirectoryNonReparse=$true;LeafPresent=$false;LeafNonReparse=$true;SignatureValid=$false;Version='';X64=$false;PathIsolated=$true})}
+    if(-not(Test-Phase12BNoReparse $pythonFixture)){throw 'Python fixture path is unsafe.'}
+    Get-Phase12BSystemPythonState -Observation (Get-Content -LiteralPath $pythonFixture -Raw -ErrorAction Stop|ConvertFrom-Json -ErrorAction Stop)
+}
+function Install-SystemPythonDependency {
+    if($TestMode){[pscustomobject]@{DirectoryPresent=$true;DirectoryIsContainer=$true;DirectoryNonReparse=$true;LeafPresent=$true;LeafNonReparse=$true;SignatureValid=$true;Version=(Get-Phase12BSystemPythonPolicy).Version;X64=$true;PathIsolated=$true}|ConvertTo-Json -Compress|Set-Content -LiteralPath $pythonFixture -NoNewline;return}
+    $bootstrapRoot=Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'CodexAutomationBootstrap'
+    if(-not(Test-Path -LiteralPath $bootstrapRoot -PathType Container) -or -not(Test-Phase12BNoReparse $bootstrapRoot) -or -not(Test-Phase12BAclPolicy -Acl (Get-Acl -LiteralPath $bootstrapRoot))){throw 'Bootstrap cache root is unsafe.'}
+    $cache=Join-Path $bootstrapRoot 'python'
+    if(-not(Test-Path -LiteralPath $cache)){New-Item -ItemType Directory -Path $cache -ErrorAction Stop|Out-Null;Invoke-Phase12BAction -Name ApplyAcl -Argument $cache}
+    Install-Phase12BSystemPython -CacheRoot $cache|Out-Null
+}
 $dependency=Read-SystemRuntimeDependency
+$pythonDependency=Read-SystemPythonDependency
 $package=$h.runner_package_path
-$plan=@('HOST_BOOTSTRAP_PLAN',"HOST_ID=$($h.host_id)","HOST_STATE=$state","CREATE_RUNTIME_ROOT=$($state -eq 'NEW')","CREATE_PROFILE_ROOT=$($state -eq 'NEW')","CREATE_EXECUTION_AREA=$($state -eq 'NEW')","CHANGE_ACL=$($state -eq 'NEW')","CREATE_RUNNER_ROOT=$($state -eq 'NEW')",("CALLER_RUNNERS={0}" -f $cfg.Callers.Count),"POWERSHELL7_DEPENDENCY=$($dependency.Classification)",'RUNNER_PACKAGE_BEFORE_CONFIG=true','INSTALL_WINDOWS_SERVICES=true','SERVICE_IDENTITY=NT AUTHORITY\NETWORK SERVICE',"PRIVATE_CONFIG=$PrivateConfig",'APPROVAL_REQUIRED=true',("RESULT={0}" -f $(if($Approve){'APPLY'}else{'PLAN'})))
+$plan=@('HOST_BOOTSTRAP_PLAN',"HOST_ID=$($h.host_id)","HOST_STATE=$state","CREATE_RUNTIME_ROOT=$($state -eq 'NEW')","CREATE_PROFILE_ROOT=$($state -eq 'NEW')","CREATE_EXECUTION_AREA=$($state -eq 'NEW')","CHANGE_ACL=$($state -eq 'NEW')","CREATE_RUNNER_ROOT=$($state -eq 'NEW')",("CALLER_RUNNERS={0}" -f $cfg.Callers.Count),"POWERSHELL7_DEPENDENCY=$($dependency.Classification)","PYTHON313_DEPENDENCY=$($pythonDependency.Classification)",'RUNNER_PACKAGE_BEFORE_CONFIG=true','INSTALL_WINDOWS_SERVICES=true','SERVICE_IDENTITY=NT AUTHORITY\NETWORK SERVICE',"PRIVATE_CONFIG=$PrivateConfig",'APPROVAL_REQUIRED=true',("RESULT={0}" -f $(if($Approve){'APPLY'}else{'PLAN'})))
 $plan -join "`n"
 if(-not $Approve){exit 0}
 if($state -ne 'NEW'){throw "Approved bootstrap requires wholly NEW host, got $state."}
 if(-not $AdapterLog){if([string]::IsNullOrWhiteSpace($package) -or -not(Test-Path -LiteralPath $package -PathType Leaf) -or -not(Test-Phase12BNoReparse $package)){throw 'Approved bootstrap requires a non-reparse runner package path grounded by host desired state.'}}
 Invoke-Phase12BSystemRuntimeBootstrap -Read {Read-SystemRuntimeDependency} -Install {Install-SystemRuntimeDependency}|Out-Null
+Invoke-Phase12BSystemPythonBootstrap -Read {Read-SystemPythonDependency} -Install {Install-SystemPythonDependency}|Out-Null
 foreach($path in @($h.runtime_root,$h.profile_root,$h.runner_root)){Invoke-Phase12BAction -Name EnsureDirectory -Argument $path -TestMode:$TestMode -FixtureRoot $FixtureRoot -AdapterLog $AdapterLog}
 $runtimeJson=(@{schema=1;host_id=$h.host_id;service_identity='NT AUTHORITY\NETWORK SERVICE';service_sid='S-1-5-20';execution_root=$h.execution_root;runtime_root=$h.runtime_root}|ConvertTo-Json -Compress)
 Invoke-Phase12BAction -Name WriteRuntime -Argument (Join-Path $h.runtime_root 'runtime.json') -TestMode:$TestMode -FixtureRoot $FixtureRoot -AdapterLog $AdapterLog -RuntimeJson $runtimeJson
