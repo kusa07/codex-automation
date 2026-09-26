@@ -1,4 +1,20 @@
 $ErrorActionPreference='Stop'
+# A module imported into a departed function scope remains loaded, but its
+# exported commands are not visible to a later standalone adapter script.
+function Import-ScopedPhase12BHostFixture { Import-Module (Join-Path $PSScriptRoot 'phase12b-host.psm1') -Scope Local -ErrorAction Stop }
+Import-ScopedPhase12BHostFixture
+$scopedModule=Get-Module -Name phase12b-host
+if(-not $scopedModule -or (Get-Command Install-Phase12BRunnerPackageAtomically -ErrorAction SilentlyContinue)){throw 'Scoped module import fixture did not isolate exported commands.'}
+$scopedRoot=Join-Path ([IO.Path]::GetTempPath()) ('phase12b-scoped-adapter-'+[guid]::NewGuid().ToString('N'))
+try {
+  New-Item -ItemType Directory -Path $scopedRoot|Out-Null
+  $scopedPackage=Join-Path $scopedRoot 'runner.zip';New-Item -ItemType File -Path $scopedPackage|Out-Null
+  $scopedError=''
+  try { & (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Action InstallPackage -Repository owner/repo -RepositoryId 123 -RunnerRoot (Join-Path $scopedRoot 'repo-123') -HostRunnerRoot $scopedRoot -OperationId 'invalid-operation-id' -RunnerPackagePath $scopedPackage }
+  catch { $scopedError=$_.Exception.Message }
+  if($scopedError -cne 'Migration operation ID is invalid.'){throw "Scoped adapter failed before canonical package validation: $scopedError"}
+  if(-not[object]::ReferenceEquals($scopedModule,(Get-Module -Name phase12b-host))){throw 'Scoped adapter replaced its already-loaded module.'}
+} finally { if(Test-Path -LiteralPath $scopedRoot){Remove-Item -LiteralPath $scopedRoot -Recurse -Force} }
 Import-Module (Join-Path $PSScriptRoot 'phase12b-host.psm1') -Force
 foreach($version in @('version 4.53.6','version v4.53.6','yq version 4.53.6','yq (https://github.com/mikefarah/yq/) version v4.53.6')){if(-not(Test-Phase12BYqV4Version $version)){throw "valid yq v4 version was rejected: $version"}}
 foreach($version in @('version v3.4.1','version 3.4.1','version v5.0.0','version 5.0.0','','unrelated tool 4 version output')){if(Test-Phase12BYqV4Version $version){throw "invalid yq version was accepted: $version"}}
@@ -21,6 +37,24 @@ try {
   $onboardHost=[pscustomobject]@{HostId='host';RunnerRoot=$runnerRoot;RunnerPackagePath=$onboardPackage}
   $onboardIdentity=Get-Phase12BCallerRunnerIdentity -RunnerRoot $runnerRoot -RepositoryId '12345'
   $onboardArguments=Get-Phase12BFixedRunnerAdapterArguments -Action InstallPackage -Host $onboardHost -Identity $onboardIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345'
+  # Production invokes the adapter from a private module function. An adapter
+  # import must not replace that live module during the next lifecycle step.
+  $missingPackageHost=[pscustomobject]@{HostId='host';RunnerRoot=$runnerRoot;RunnerPackagePath=(Join-Path $root 'missing-runner.zip')}
+  $moduleBefore=Get-Module -Name phase12b-host;$adapterError=''
+  try { & $moduleBefore { param($fixtureHost,$fixtureIdentity) Invoke-Phase12BFixedRunnerAdapter -Action InstallPackage -Host $fixtureHost -Identity $fixtureIdentity -RepositoryFullName 'owner/repo' -RepositoryId '12345' } $missingPackageHost $onboardIdentity }
+  catch { $adapterError=$_.Exception.Message }
+  if($adapterError -cne 'Runner package availability is not grounded by host desired state.'){throw "Unexpected adapter fixture result: $adapterError"}
+  $moduleAfter=Get-Module -Name phase12b-host
+  if(-not[object]::ReferenceEquals($moduleBefore,$moduleAfter)){throw 'Runner adapter replaced its calling module during Fresh Onboard.'}
+  & $moduleAfter { Get-Command Invoke-Phase12BFixedRunnerAdapter -ErrorAction Stop | Out-Null }
+  $foreignModule=New-Module -Name phase12b-host -ScriptBlock {}
+  Import-Module -ModuleInfo $foreignModule
+  try {
+    $identityError=''
+    try { & (Join-Path $PSScriptRoot 'runner-adapter.ps1') -Action InstallPackage -Repository owner/repo -RepositoryId 12345 -RunnerRoot $onboardIdentity.RunnerDirectory -HostRunnerRoot $runnerRoot -OperationId ([string]$onboardArguments.OperationId) -RunnerPackagePath $onboardPackage }
+    catch { $identityError=$_.Exception.Message }
+    if($identityError -cne 'Runner adapter host module identity is ambiguous.'){throw 'Runner adapter accepted a competing same-name host module.'}
+  } finally { Remove-Module -ModuleInfo $foreignModule }
   if([string]$onboardArguments.HostRunnerRoot -cne $runnerRoot -or [string]$onboardArguments.RunnerRoot -cne $onboardIdentity.RunnerDirectory -or [string]$onboardArguments.RunnerPackagePath -cne $onboardPackage){throw 'Fresh Onboard canonical package arguments were not propagated.'}
   $operationId=[string]$onboardArguments.OperationId;$parsedOperation=[guid]::Empty
   if(-not[guid]::TryParseExact($operationId,'D',[ref]$parsedOperation)){throw 'Fresh Onboard package operation ID is not filesystem-safe.'}
