@@ -7,7 +7,17 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
-Import-Module (Join-Path $PSScriptRoot 'phase12b-host.psm1') -Force
+$modulePath=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'phase12b-host.psm1'))
+$loadedModules=@(Get-Module -Name 'phase12b-host')
+if($loadedModules.Count -gt 1 -or @($loadedModules|Where-Object { [string]::IsNullOrWhiteSpace($_.Path) -or [IO.Path]::GetFullPath($_.Path) -ine $modulePath }).Count -gt 0){throw 'Runner adapter host module identity is ambiguous.'}
+if($loadedModules.Count -eq 0){Import-Module -Name $modulePath -Scope Local -ErrorAction Stop}
+else{Import-Module -ModuleInfo $loadedModules[0] -Scope Local -ErrorAction Stop}
+$boundModule=@(Get-Module -Name 'phase12b-host')
+if($boundModule.Count -ne 1){throw 'Runner adapter host module identity is ambiguous.'}
+foreach($requiredCommand in @('Install-Phase12BRunnerPackageAtomically','Invoke-Phase12BAction')){
+    $boundCommand=Get-Command -Name $requiredCommand -CommandType Function -ErrorAction Stop
+    if(-not[object]::ReferenceEquals($boundCommand.Module,$boundModule[0])){throw 'Runner adapter host command is not bound to the canonical module.'}
+}
 if($Repository -and $Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'){throw 'Invalid repository identity.'}
 if($RepositoryId -and $RepositoryId -notmatch '^[1-9][0-9]*$'){throw 'Invalid repository ID.'}
 if($Action -eq 'InstallPackage'){
