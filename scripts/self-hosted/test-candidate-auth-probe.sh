@@ -167,7 +167,8 @@ rm -f -- "${relocated}"
 # The diagnostic mode is exclusive and the normal write/read-only jobs keep
 # their own Secret preflight rather than inheriting the two-version exception.
 grep -F 'candidate_auth_validation_mode:' "${workflow}" >/dev/null
-grep -F 'if: ${{ inputs.candidate_auth_validation_mode == true && inputs.validation_mode != true && inputs.workspace_write_validation_mode != true }}' "${workflow}" >/dev/null
+grep -F 'if: ${{ inputs.candidate_auth_validation_mode == true && inputs.validation_mode != true && inputs.workspace_write_validation_mode != true && inputs.issue_e2e_validation_mode != true }}' "${workflow}" >/dev/null
+grep -F 'reject-incompatible-issue-e2e-mode:' "${workflow}" >/dev/null
 grep -F 'name: Complete self-hosted candidate authentication diagnostic' "${workflow}" >/dev/null
 grep -F 'AUTH_PROBE_COMPLETE=true' "${workflow}" >/dev/null
 grep -F 'inputs.validation_mode != true && inputs.candidate_auth_validation_mode != true' "${workflow}" >/dev/null
