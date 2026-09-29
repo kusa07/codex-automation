@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["IMPLEMENTED", "NO_CHANGES", "STOP_AND_REPORT"]
+    },
+    "reason_code": {
+      "type": "string",
+      "enum": [
+        "IMPLEMENTED",
+        "NO_CHANGE_NEEDED",
+        "INSUFFICIENT_VERIFIABLE_INPUT",
+        "REQUIRES_USER_DECISION",
+        "BLOCKED_BY_ENVIRONMENT",
+        "REPOSITORY_STATE_CONFLICT",
+        "OTHER_SAFE_STOP"
+      ]
+    },
+    "summary": { "type": "string" }
+  },
+  "required": ["outcome", "reason_code", "summary"],
+  "additionalProperties": false
+}

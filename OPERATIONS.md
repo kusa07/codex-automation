@@ -671,6 +671,44 @@ The next task must be prepared from the execution plan plus the actual result of
 
 ## Phase 12B operator plans
 
+### General Issue results without a Draft PR
+
+The normal general-Issue path still publishes validated changed paths through
+a trusted commit, explicit task-branch push, and Draft PR. CA-P10-033 fixture
+mode keeps its exact single-file contract. A successful pinned Local Codex
+execution with **zero** allowed changes after the full protected-path and Git
+state checks instead produces a bounded structured outcome. The actual clean
+repository state, not the model's `IMPLEMENTED` claim, is authoritative.
+
+Only after canonical workspace cleanup, execution-area preflight, current-run
+absence, and isolated Google CLI config cleanup pass may the trusted workflow
+re-read the immutable repository ID, source Issue, workflow run/attempt, and
+absence of the deterministic remote task branch and PR. It then posts one
+source-Issue comment beginning exactly `CODEX_RETURN_V1` with fixed fields
+`REPOSITORY`, `REPOSITORY_ID`, `ISSUE_NUMBER`, `RUN_ID`, `RUN_ATTEMPT`,
+`RESULT`, `REASON_CODE`, `NEXT_ACTION`, and single-line `SUMMARY`. `RESULT` is
+`NO_CHANGES` or `STOP_AND_REPORT`; `NEXT_ACTION` is `USER_REVIEW`. Model output
+is schema-constrained, but trusted validation bounds and sanitizes its
+summary. Unsafe or malformed detail becomes a fixed safe fallback; raw
+stdout/stderr/last-message content is never posted. Codex failure, protected
+changes, cleanup failure, identity mismatch, or publication collision still
+fails closed without this success comment. Local Codex has no GitHub write
+token; only the trusted workflow may use `issues: write` for this fixed
+comment endpoint.
+
+The ChatGPT Work Return Hub configuration itself is **not** changed here. Its
+consumer may add an `issue_comment.created` route for this contract, but must
+not trust the marker or body alone: fetch the comment and source Issue from
+GitHub, verify the trusted Actions actor and exact comment ID, caller
+repository immutable ID, Issue number, and referenced workflow run/attempt
+repository/workflow/head SHA and expected status/conclusion. Treat the body as
+eligible only when those authoritative facts and all fixed fields agree. A
+user-written `CODEX_RETURN_V1` comment is not trusted. This relies on the
+caller's Actions permission model; the marker is not a cryptographic proof of
+which workflow authored a comment. Draft-PR successes continue through the
+existing PR-open Return Hub path without a duplicate Issue comment.
+
+
 For an already managed Phase 12B host missing the product-wide PowerShell 7
 dependency, run `scripts/host/apply-system-runtime.ps1 -PrivateConfig <private
 environment.yaml>` in plan mode, then use `-Approve` only after exact host,

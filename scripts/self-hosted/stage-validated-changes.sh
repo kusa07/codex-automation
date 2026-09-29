@@ -121,7 +121,13 @@ while IFS= read -r -d '' status_entry; do
 done < "${temporary_directory}/status"
 check_marker
 check_ignored_paths
-[[ ${#changed_paths[@]} -gt 0 ]] || { echo 'Codex produced no allowed changes' >&2; exit 1; }
+if [[ ${#changed_paths[@]} -eq 0 ]]; then
+  # Only the general-Issue caller may distinguish a fully validated clean
+  # workspace from a publication failure. The strict fixture still fails.
+  if [[ "${mode}" == general ]]; then exit 42; fi
+  echo 'Codex produced no allowed changes' >&2
+  exit 1
+fi
 
 if [[ "${mode}" == fixture ]]; then
   [[ ${#changed_paths[@]} -eq 1 && "${changed_paths[0]}" == "${fixture_path}" ]] || exit 1
