@@ -22,6 +22,12 @@ case "$code" in
     preserved_state='validated result is available for review'
     action='USER_REVIEW'
     ;;
+  NO_PR_RESULT_READY)
+    result_class='SUCCESS_NO_PR'
+    cause='validated execution completed without publishable repository changes'
+    preserved_state='trusted Issue result is eligible only after full cleanup and GitHub read-back'
+    action='USER_REVIEW'
+    ;;
   RUNNER_OFFLINE|RUNNER_BUSY|RUNNER_INELIGIBLE|UNKNOWN_INFRASTRUCTURE_FAILURE)
     result_class='INFRASTRUCTURE_RUNNER'
     cause='runner availability or infrastructure did not permit execution'

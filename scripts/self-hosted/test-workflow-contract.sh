@@ -17,4 +17,15 @@ fi
 grep -Fq -- '--sandbox workspace-write' "$workflow"
 grep -Fq -- 'env -i PATH="${PATH}" CODEX_HOME="${codex_home}"' "$workflow"
 
+# The same production payload that stages normal changed files must route a
+# fully validated clean general-Issue workspace to the trusted return helper.
+grep -Fq -- 'codex_outcome_args=(--output-schema' "$workflow"
+grep -Fq -- 'stage_status == 42' "$workflow"
+grep -Fq -- '-Action Prepare -CandidatePath' "$workflow"
+grep -Fq -- '-Action Publish' "$workflow"
+grep -Fq -- "steps.workspace_cleanup.outputs.no_pr_ready == 'true'" "$workflow"
+grep -Fq -- "steps.gcloud_cleanup.outcome == 'success'" "$workflow"
+grep -Fq -- '      issues: write' "$workflow"
+grep -Fq -- '  issues: write' "${script_dir}/../../templates/caller/codex-connectivity-test.yml.tpl"
+
 printf 'workflow contract tests passed\n'

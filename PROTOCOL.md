@@ -133,10 +133,12 @@ Codex modifies the task branch working tree but does not perform Git
 administration or GitHub publication. The trusted workflow owns staging,
 commit, push, and Draft Pull Request creation.
 
-The Issue remains open and retains `codex-ready` during Phase 10. The workflow
-does not add Issue comments, approve the Pull Request, mark it ready for
-review, or merge it. The fixed Pull Request body contains `Closes #N`, so the
-Issue is closed only if the Pull Request is later merged.
+The Issue remains open and retains `codex-ready` during Phase 10. The original
+Phase 10 Draft-PR path does not add Issue comments, approve the Pull Request,
+mark it ready for review, or merge it. The fixed Pull Request body contains
+`Closes #N`, so the Issue is closed only if the Pull Request is later merged.
+The later Phase 12B general-Issue no-PR return path is separately defined in
+`OPERATIONS.md` and does not relax this Draft-PR publication boundary.
 
 A Draft Pull Request is an implementation artifact awaiting review; it is not
 an approval signal.

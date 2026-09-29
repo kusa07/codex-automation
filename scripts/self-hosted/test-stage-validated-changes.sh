@@ -52,7 +52,17 @@ printf '%s\n' tampered > "${repo}/.codex-workspace-owned.json"
 expect_reject "${repo}" general '' ''
 
 new_repo
-expect_reject "${repo}" general '' ''
+if stage "${repo}" general '' '' >/dev/null 2>&1; then
+  echo 'Clean general-Issue workspace unexpectedly entered Draft PR path' >&2
+  exit 1
+else
+  [[ $? -eq 42 ]] || { echo 'Clean general-Issue workspace did not return the dedicated no-change result' >&2; exit 1; }
+fi
+git -C "${repo}" diff --cached --quiet --
+
+new_repo
+printf '%s' exact > "${test_root}/fixture-content"
+expect_reject "${repo}" fixture 'ca-p10-033-e2e/issue-17.txt' "${test_root}/fixture-content"
 
 new_repo
 mkdir -p -- "${repo}/ca-p10-033-e2e"
