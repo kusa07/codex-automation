@@ -32,12 +32,13 @@ permissions exist only for trusted task-branch publication and Draft Pull
 Request creation.
 
 For the Phase 12B general-Issue no-PR return contract, the current thin
-caller template grants `issues: write` in place of `issues: read`. The reusable
-workspace-write job receives the same minimum permission so its trusted layer
-can comment on the exact source Issue after successful zero-change execution
-and cleanup. Local Codex still receives no GitHub write token, and Issue text
-cannot select an API endpoint or alter publication policy. Other jobs retain
-their existing permissions.
+caller template grants `issues: write` in place of `issues: read` and
+`actions: read` for authoritative workflow run/attempt verification. The
+reusable workspace-write job receives these permissions so its trusted layer
+can verify the exact run/attempt and comment on the exact source Issue after
+successful zero-change execution and cleanup. Local Codex still receives no
+GitHub write token, and Issue text cannot select an API endpoint or alter
+publication policy. Other jobs retain their existing permissions.
 
 A caller may need to expose runner eligibility or binding required by GitHub's runner resource model, but that does not transfer ownership of Self-hosted Execution policy or lifecycle into the caller repository.
 

@@ -27,5 +27,9 @@ grep -Fq -- "steps.workspace_cleanup.outputs.no_pr_ready == 'true'" "$workflow"
 grep -Fq -- "steps.gcloud_cleanup.outcome == 'success'" "$workflow"
 grep -Fq -- '      issues: write' "$workflow"
 grep -Fq -- '  issues: write' "${script_dir}/../../templates/caller/codex-connectivity-test.yml.tpl"
+production_job="$(awk '/^  self-hosted-workspace-write-validation:/{found=1; next} found && /^  [a-zA-Z0-9_-]+:/{exit} found {print}' "$workflow")"
+grep -Fq '      actions: read' <<< "$production_job"
+[[ "$(grep -Fc '      actions: read' "$workflow")" == 1 ]]
+[[ "$(grep -Fc '  actions: read' "${script_dir}/../../templates/caller/codex-connectivity-test.yml.tpl")" == 1 ]]
 
 printf 'workflow contract tests passed\n'
