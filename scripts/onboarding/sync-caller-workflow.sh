@@ -73,6 +73,11 @@ if [[ -n "$repository" ]]; then
       approved_render="$(mktemp)"; cleanup+=("$approved_render")
       sed -e "s#__AUTOMATION_REPOSITORY__#$automation_repo#g" -e "s#__AUTOMATION_WORKFLOW_PATH__#$automation_path#g" -e "s#__AUTOMATION_WORKFLOW_SHA__#$approved_sha#g" -e "s#__GOOGLE_CLOUD_PROJECT_ID__#$project_id#g" -e "s#__WORKLOAD_IDENTITY_PROVIDER__#$provider_resource#g" -e "s#__CODEX_AUTH_SECRET_ID__#$secret_id#g" "$canonical_template" > "$approved_render"
       known_old+=("$approved_render")
+      historical_template="$ROOT/templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl"
+      [[ -f "$historical_template" && ! -L "$historical_template" ]] || { echo 'Canonical pre-no-PR-return workflow template is missing or unsafe.' >&2; exit 3; }
+      historical_render="$(mktemp)"; cleanup+=("$historical_render")
+      sed -e "s#__AUTOMATION_REPOSITORY__#$automation_repo#g" -e "s#__AUTOMATION_WORKFLOW_PATH__#$automation_path#g" -e "s#__AUTOMATION_WORKFLOW_SHA__#$approved_sha#g" -e "s#__GOOGLE_CLOUD_PROJECT_ID__#$project_id#g" -e "s#__WORKLOAD_IDENTITY_PROVIDER__#$provider_resource#g" -e "s#__CODEX_AUTH_SECRET_ID__#$secret_id#g" "$historical_template" > "$historical_render"
+      known_old+=("$historical_render")
       legacy_template="$ROOT/templates/caller/phase10-connectivity-test.yml.tpl"
       [[ -f "$legacy_template" && ! -L "$legacy_template" ]] || { echo 'Canonical Phase 10 legacy workflow template is missing or unsafe.' >&2; exit 3; }
       legacy_render="$(mktemp)"; cleanup+=("$legacy_render")
