@@ -31,9 +31,103 @@ fi
 grep -q 'WORKFLOW_STATE=EXACT_TARGET' < <("$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$current" --target "$current" --test-mode --fixture-root "$tmp")
 echo 'workflow-sync-canonical-templates: PASS'
 
+# Historical pre-no-PR-return canonical bytes are an explicit repository-owned
+# compatibility authority.  They are accepted only when compared byte-for-byte
+# against the rendered approved-SHA candidate; similar or unapproved content
+# remains DIVERGED.
+historical_template="$ROOT/templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl"
+historical="$tmp/historical-rendered"; historical_unapproved="$tmp/historical-unapproved"
+sed -e 's#__AUTOMATION_REPOSITORY__#kusa07/codex-automation#g' -e 's#__AUTOMATION_WORKFLOW_PATH__#.github/workflows/codex-run.yml#g' -e 's#__AUTOMATION_WORKFLOW_SHA__#352857a387b1f855920fb8d1587091b31e518c21#g' -e 's#__GOOGLE_CLOUD_PROJECT_ID__#codex-automation-506111#g' -e 's#__WORKLOAD_IDENTITY_PROVIDER__#projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions#g' -e 's#__CODEX_AUTH_SECRET_ID__#codex-auth-example-project#g' "$historical_template" > "$historical"
+grep -q 'WORKFLOW_STATE=MANAGED_OLD' < <("$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$historical" --target "$current" --known-old "$historical" --test-mode --fixture-root "$tmp")
+sed 's/issues: read/issues: writ3/' "$historical" > "$tmp/historical-one-byte"
+if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$tmp/historical-one-byte" --target "$current" --known-old "$historical" --test-mode --fixture-root "$tmp" >/dev/null 2>&1; then
+  echo 'one-byte historical canonical divergence was accepted' >&2; exit 1
+fi
+sed -e 's/352857a387b1f855920fb8d1587091b31e518c21/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' "$historical" > "$historical_unapproved"
+if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$historical_unapproved" --target "$current" --known-old "$historical" --test-mode --fixture-root "$tmp" >/dev/null 2>&1; then
+  echo 'unapproved historical SHA was accepted' >&2; exit 1
+fi
+sed 's/issues: read/issues: write/' "$historical" > "$tmp/historical-issues-only"
+if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$tmp/historical-issues-only" --target "$current" --known-old "$historical" --test-mode --fixture-root "$tmp" >/dev/null 2>&1; then
+  echo 'issues-only historical variation was accepted' >&2; exit 1
+fi
+printf 'uses: example@%040d\n' 9 > "$tmp/arbitrary-sha-match"
+if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$tmp/arbitrary-sha-match" --target "$current" --known-old "$historical" --test-mode --fixture-root "$tmp" >/dev/null 2>&1; then
+  echo 'arbitrary workflow matching SHA was accepted' >&2; exit 1
+fi
+echo 'workflow-sync-historical-canonical: PASS'
+
+# Production-shaped authority fixture: no --test-mode and no --known-old are
+# permitted here.  The mocked gh/gcloud/yq commands stand in only for external
+# read-back while the production branch generates candidates from the approved
+# WIF SHA set and repository-owned templates.
+prod="$(mktemp -d)"; remote=''; trap 'rm -rf "$tmp" "${remote:-}" "$prod"' EXIT
+mkdir -p "$prod/bin"
+cat > "$prod/bin/yq" <<'FAKE'
+#!/usr/bin/env bash
+[[ "${1:-}" == --version ]] && { echo 'yq version v4.53.6'; exit 0; }
+[[ "${1:-}" == -e ]] && exit 0
+query="${2:-}"
+case "$query" in
+  *schema_version*) echo 1;;
+  *.github.owner\ * ) echo kusa07;;
+  *.github.owner_id\ * ) echo 123;;
+  *.google_cloud.project_id\ * ) echo test-project-12345;;
+  *.google_cloud.project_number\ * ) echo 896979145485;;
+  *.google_cloud.workload_identity_pool\ * ) echo github;;
+  *.google_cloud.workload_identity_provider\ * ) echo github-actions;;
+  *.google_cloud.workload_identity_provider_resource\ * ) echo projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions;;
+  *.automation.repository\ * ) echo kusa07/codex-automation;;
+  *.automation.workflow_path\ * ) echo .github/workflows/codex-run.yml;;
+  *.automation.active_workflow_sha\ * ) echo eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee;;
+  *.repository.full_name\ * ) echo kusa07/example-project;;
+  *.repository.id\ * ) echo 12345;;
+  *.secret.id\ * ) echo codex-auth-example-project;;
+  *.workflow.path\ * ) echo .github/workflows/codex-connectivity-test.yml;;
+  *.workflow.branch\ * ) echo main;;
+  *.runner.enabled\ * ) echo true;;
+  *.runner.scope\ * ) echo repository;;
+  *) echo '';;
+esac
+FAKE
+cat > "$prod/bin/gh" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "$*" == *'@tsv'* ]]; then printf '12345\tkusa07/example-project\tmain\n'; exit 0; fi
+if [[ "$*" == *'--include'* ]]; then printf 'HTTP/2 200 OK\r\n\r\n'; exit 0; fi
+if [[ "$*" == *'.sha'* ]]; then printf '0123456789012345678901234567890123456789\n'; exit 0; fi
+if [[ "$*" == *'.content'* ]]; then base64 -w0 "$MOCK_REMOTE"; exit 0; fi
+exit 1
+FAKE
+cat > "$prod/bin/gcloud" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "$*" == *attributeCondition* ]]; then printf "assertion.repository_owner_id == '123' && assertion.job_workflow_ref.startsWith('kusa07/codex-automation/.github/workflows/codex-run.yml@') && assertion.job_workflow_sha in ['352857a387b1f855920fb8d1587091b31e518c21','eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee']\n"; exit 0; fi
+exit 1
+FAKE
+chmod +x "$prod/bin/yq" "$prod/bin/gh" "$prod/bin/gcloud"
+printf 'schema_version: 1\n' > "$prod/environment.yaml"
+printf 'schema_version: 1\n' > "$prod/caller.yaml"
+sed -e 's#__AUTOMATION_REPOSITORY__#kusa07/codex-automation#g' -e 's#__AUTOMATION_WORKFLOW_PATH__#.github/workflows/codex-run.yml#g' -e 's#__AUTOMATION_WORKFLOW_SHA__#352857a387b1f855920fb8d1587091b31e518c21#g' -e 's#__GOOGLE_CLOUD_PROJECT_ID__#test-project-12345#g' -e 's#__WORKLOAD_IDENTITY_PROVIDER__#projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions#g' -e 's#__CODEX_AUTH_SECRET_ID__#codex-auth-example-project#g' "$historical_template" > "$prod/historical"
+export PATH="$prod/bin:$PATH" MOCK_REMOTE="$prod/historical"
+unset PHASE12B_GH_BIN PHASE12B_TEST_REPOSITORY_ID PHASE12B_TEST_DEFAULT_BRANCH PHASE12B_CURRENT_WORKFLOW_FILE PHASE12B_CURRENT_CONTENT_SHA PHASE12B_CANONICAL_TEMPLATE PHASE12B_MANAGED_OLD_WORKFLOW PHASE12B_AUTOMATION_REPOSITORY PHASE12B_AUTOMATION_WORKFLOW_PATH
+if ! "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --repository kusa07/example-project --environment "$prod/environment.yaml" --private-config "$prod/caller.yaml" --target-workflow-sha eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee --mode plan > "$prod/exact.out"; then
+  echo 'production-shaped historical canonical was not accepted' >&2; exit 1
+fi
+grep -q 'WORKFLOW_STATE=MANAGED_OLD' "$prod/exact.out"
+sed 's/issues: read/issues: writ3/' "$prod/historical" > "$prod/mutated"
+export MOCK_REMOTE="$prod/mutated"
+if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --repository kusa07/example-project --environment "$prod/environment.yaml" --private-config "$prod/caller.yaml" --target-workflow-sha eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee --mode plan > "$prod/mutated.out" 2>&1; then
+  echo 'production-shaped one-byte divergence was accepted' >&2; exit 1
+fi
+sed -e 's/352857a387b1f855920fb8d1587091b31e518c21/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' "$prod/historical" > "$prod/unapproved"
+export MOCK_REMOTE="$prod/unapproved"
+if "$ROOT/scripts/onboarding/sync-caller-workflow.sh" --repository kusa07/example-project --environment "$prod/environment.yaml" --private-config "$prod/caller.yaml" --target-workflow-sha eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee --mode plan > "$prod/unapproved.out" 2>&1; then
+  echo 'production-shaped unapproved SHA was accepted' >&2; exit 1
+fi
+echo 'workflow-sync-production-historical: PASS'
+
 # Remote interface fixture: repository ID, managed-old classification, PUT,
 # and exact content/blob read-back are exercised without GitHub mutation.
-remote="$(mktemp -d)"; trap 'rm -rf "$tmp" "$remote"' EXIT
+remote="$(mktemp -d)"; trap 'rm -rf "$tmp" "$remote" "$prod"' EXIT
 mkdir -p "$remote/bin"
 cat > "$remote/bin/yq" <<'FAKE'
 #!/usr/bin/env bash
