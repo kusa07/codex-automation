@@ -37,6 +37,12 @@ echo 'workflow-sync-canonical-templates: PASS'
 # remains DIVERGED.
 historical_template="$ROOT/templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl"
 historical="$tmp/historical-rendered"; historical_unapproved="$tmp/historical-unapproved"
+historical_blob_sha="$(git -C "$ROOT" rev-parse HEAD:templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl)"
+[[ "$historical_blob_sha" == 22dacc79bb6a9fb7225f5da33506097180f546aa ]] || { echo 'Historical canonical blob hash changed.' >&2; exit 1; }
+[[ "$(git -C "$ROOT" check-attr eol -- templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl | awk '{print $3}')" == lf ]] || { echo 'Historical canonical template must use LF checkout filtering.' >&2; exit 1; }
+git -C "$ROOT" show HEAD:templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl | git hash-object --stdin | grep -qx 22dacc79bb6a9fb7225f5da33506097180f546aa || { echo 'Historical canonical blob bytes changed.' >&2; exit 1; }
+filtered_blob_sha="$(git -C "$ROOT" -c core.autocrlf=true cat-file --filters --path=templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl HEAD:templates/caller/codex-connectivity-test-pre-no-pr-return.yml.tpl | git hash-object --stdin)"
+[[ "$filtered_blob_sha" == 22dacc79bb6a9fb7225f5da33506097180f546aa ]] || { echo 'Windows-filtered historical canonical bytes changed.' >&2; exit 1; }
 sed -e 's#__AUTOMATION_REPOSITORY__#kusa07/codex-automation#g' -e 's#__AUTOMATION_WORKFLOW_PATH__#.github/workflows/codex-run.yml#g' -e 's#__AUTOMATION_WORKFLOW_SHA__#352857a387b1f855920fb8d1587091b31e518c21#g' -e 's#__GOOGLE_CLOUD_PROJECT_ID__#codex-automation-506111#g' -e 's#__WORKLOAD_IDENTITY_PROVIDER__#projects/896979145485/locations/global/workloadIdentityPools/github/providers/github-actions#g' -e 's#__CODEX_AUTH_SECRET_ID__#codex-auth-example-project#g' "$historical_template" > "$historical"
 grep -q 'WORKFLOW_STATE=MANAGED_OLD' < <("$ROOT/scripts/onboarding/sync-caller-workflow.sh" --existing "$historical" --target "$current" --known-old "$historical" --test-mode --fixture-root "$tmp")
 sed 's/issues: read/issues: writ3/' "$historical" > "$tmp/historical-one-byte"
