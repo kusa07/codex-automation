@@ -285,8 +285,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm install --global @openai/codex@0.148.0
-          [[ "$(codex --version)" == "codex-cli 0.148.0" ]] || {
+          npm install --global @openai/codex@0.159.3
+          [[ "$(codex --version)" == "codex-cli 0.159.3" ]] || {
             echo "Installed Codex CLI version does not match the pinned version" >&2
             exit 1
           }
@@ -561,7 +561,7 @@ jobs:
           JSON
           chmod 600 -- "${CODEX_DIAGNOSTIC_SCHEMA_FILE}"
 
-          if [[ "$(codex --version 2>/dev/null || true)" == "codex-cli 0.148.0" ]]; then
+          if [[ "$(codex --version 2>/dev/null || true)" == "codex-cli 0.159.3" ]]; then
             printf 'true\n' > "${CODEX_CLI_VERSION_MATCH_FILE}"
           else
             printf 'false\n' > "${CODEX_CLI_VERSION_MATCH_FILE}"
@@ -1507,7 +1507,7 @@ jobs:
       GOOGLE_CLOUD_PROJECT_ID: ${{ inputs.google_cloud_project_id }}
       CONNECTIVITY_SECRET_ID: ${{ inputs.codex_auth_secret_id }}
       CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
-      CODEX_VERSION: 0.148.0
+      CODEX_VERSION: 0.159.3
     defaults:
       run:
         shell: C:\PROGRA~1\Git\bin\bash.exe --noprofile --norc -e -o pipefail "{0}"
@@ -1658,7 +1658,7 @@ jobs:
       CONNECTIVITY_SECRET_ID: ${{ inputs.codex_auth_secret_id }}
       CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
       CODEX_HOME: C:/codex-self-hosted/codex-home
-      CODEX_VERSION: 0.148.0
+      CODEX_VERSION: 0.159.3
     defaults:
       run:
         shell: C:\PROGRA~1\Git\bin\bash.exe --noprofile --norc -e -o pipefail "{0}"
@@ -1970,7 +1970,7 @@ jobs:
       CONNECTIVITY_SECRET_ID: ${{ inputs.codex_auth_secret_id }}
       CODEX_AUTOMATION_ROOT: C:/codex-self-hosted
       CODEX_HOME: C:/codex-self-hosted/codex-home
-      CODEX_VERSION: 0.148.0
+      CODEX_VERSION: 0.159.3
       GH_TOKEN: ${{ github.token }}
       ISSUE_NUMBER: ${{ inputs.issue_number }}
       WORKSPACE_WRITE_VALIDATION_MODE: ${{ inputs.workspace_write_validation_mode }}
